@@ -1,0 +1,15 @@
+numpy
+h5py
+pandas
+scipy
+pytorch>=1.7.0
+pybedtools
+pyranges
+biopython
+MOODS-python
+snapATAC2
+plotly
+dna_features_viewer
+scanpy
+pyBigWig
+gffutils

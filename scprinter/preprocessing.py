@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+import os.path
+
 from . import genome
 from .utils import *
 from .io import load_printer, PyPrinter
@@ -13,6 +16,15 @@ import uuid
 import time
 def import_data(path, barcode, gff_file, chrom_sizes, extra_plus_shift,
                 extra_minus_shift, tempname, **kwargs):
+    if '.gz' not in path:
+        if os.path.exists(path + '.gz'):
+            print ("using gzipped file: %s.gz" % path)
+            path = path + '.gz'
+        else:
+            print ("gzipping %s, because currently the backend requires gzipped file" % path)
+            os.system('gzip %s' % path)
+            path = path + '.gz'
+
     data = snap.pp.import_data(path,
                                file=tempname,
                                whitelist=barcode,
@@ -98,7 +110,16 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
         del kwargs['min_tsse']
 
     if len(pathsToFrags) == 1:
-        data = snap.pp.import_data(pathsToFrags[0],
+        path = pathsToFrags[0]
+        if os.path.exists(path + '.gz'):
+            print ("using gzipped file: %s.gz" % path)
+            path = path + '.gz'
+        else:
+            print ("gzipping %s, because currently the backend requires gzipped file" % path)
+            os.system('gzip %s' % path)
+            path = path + '.gz'
+
+        data = snap.pp.import_data(path,
                                    file=savename,
                                    whitelist=barcodes[0],
                                    # gene_anno=genome.fetch_gff(),

@@ -120,6 +120,7 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
                 os.system('gzip %s' % path)
                 path = path + '.gz'
 
+
         data = snap.pp.import_data(path,
                                    file=savename,
                                    whitelist=barcodes[0],

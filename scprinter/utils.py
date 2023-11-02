@@ -112,32 +112,30 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
 
 def frags_to_insertions(data):
     x = data.obsm['fragment_paired']
-    insertion = csr_matrix((np.ones_like(x.indices), x.indices, x.indptr), shape=x.shape) + \
-                csr_matrix((np.ones_like(x.indices), x.indices + x.data, x.indptr), shape=x.shape)
-    insertion.sum_duplicates()
+    insertion = csr_matrix((np.ones(len(x.indices) * 2, dtype='uint16'),
+                            np.concatenate([x.indices, x.indices + x.data], axis=0),
+                            x.indptr * 2), shape=x.shape)
     insertion.sort_indices()
+    insertion.sum_duplicates()
     data.obsm['insertion'] = insertion
     return data
 
 def check_snap_insertion(shift_left=0, shift_right=0):
-    temp_fragments = gzip.open("temp_fragments.tsv.gz", "wb")
+    temp_fragments = gzip.open("temp_fragments.tsv.gz", "wt")
     # This checks the end to see if snapatac2 now would do insertion at end, or end-1
     for i in range(100):
-        temp_fragments.write("chr1\t%d\t%d\tbarcode1\t1\n".encode() % (4, 100))
+        temp_fragments.write("chr1\t%d\t%d\tbarcode1\t1\n" % (4, 100))
     temp_fragments.close()
-    sys.stdout.flush()
     data = snap.pp.import_data("temp_fragments.tsv.gz",
                            chrom_sizes=snap.genome.hg38.chrom_sizes,
                            min_num_fragments=0,
                            shift_left=shift_left,
                            shift_right=shift_right,
-                           n_jobs=1, chunk_size=1,
-                           file='testabcdefg.h5ad')
+                           # file='testabcdefg.h5ad'
+                               )
     data = frags_to_insertions(data)
-    v = np.array(data.obsm['insertion'][0, :1000].toarray()).reshape((-1))
-    data.close()
+    v = np.array(data.obsm['insertion'][0, :200].toarray()).reshape((-1))
     os.remove("temp_fragments.tsv.gz")
-    os.remove("testabcdefg.h5ad")
     # If true: The fixed version I compiled or they fixed it, else not fixed
     return v[100] == 100
 

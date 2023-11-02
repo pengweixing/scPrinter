@@ -79,7 +79,6 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
     # meaning that I'll do [end, end+1) as insertion position, not [end-1, end)
     extra_plus_shift = 4 - plus_shift
     extra_minus_shift = -5 - minus_shift
-
     # this function check is snapATAC2 fix the insertion in the future
     flag_ = check_snap_insertion()
     print ("snapatac2 shift check", flag_)

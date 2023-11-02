@@ -16,11 +16,11 @@ def import_data(path, barcode, gff_file, chrom_sizes, extra_plus_shift,
     data = snap.pp.import_data(path,
                                file=tempname,
                                whitelist=barcode,
-                               gene_anno=gff_file,
-                               chrom_size=chrom_sizes,
+                               chrom_sizes=chrom_sizes,
                                shift_left=extra_plus_shift,
                                shift_right=extra_minus_shift,
                                **kwargs)
+    data = frags_to_insertions(data)
     data.close()
     return tempname
 
@@ -91,18 +91,23 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
         else:
             extra_minus_shift += 1
 
-    if 'low_memory' not in kwargs:
-        kwargs['low_memory'] = False
+    if 'low_memory' in kwargs:
+        del  kwargs['low_memory']
+
+    # this is a historical kwarg that snapatac2 takes, but not anymore
+    if 'min_tsse' in kwargs:
+        del kwargs['min_tsse']
 
     if len(pathsToFrags) == 1:
         data = snap.pp.import_data(pathsToFrags[0],
                                    file=savename,
                                    whitelist=barcodes[0],
-                                   gene_anno=genome.fetch_gff(),
-                                   chrom_size=genome.chrom_sizes,
+                                   # gene_anno=genome.fetch_gff(),
+                                   chrom_sizes=genome.chrom_sizes,
                                    shift_left=extra_plus_shift,
                                    shift_right=extra_minus_shift,
                                    **kwargs)
+        frags_to_insertions(data)
     else:
         # with multiple fragments, store them in memory and concat
         # Should be able to support snapatac2.anndataset in the future, but, let's keep it this way for now

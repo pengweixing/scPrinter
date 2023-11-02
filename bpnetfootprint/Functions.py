@@ -12,7 +12,7 @@ def multinomial_negative_log_likelihood(logps, true_counts):
     return -log_fact_sum + log_prod_fact - log_prod_exp
 
 def log1p_mse(log_predicted_counts, true_counts, reduction='mean'):
-    log_true = torch.log1p(true_counts + 1)
+    log_true = torch.log1p(true_counts)
     return F.mse_loss(log_predicted_counts.reshape((-1)),
                       log_true.reshape((-1)), reduction=reduction)
 

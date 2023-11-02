@@ -6,10 +6,12 @@ import numba
 import torch
 import pandas
 import logomaker
-
-from tqdm import tqdm
-from tqdm import trange
-
+import pyBigWig
+from scipy.sparse import coo_matrix, csr_matrix, lil_matrix
+from tqdm.auto import trange
+import numpy as np
+from tqdm.auto import tqdm, trange
+import bioframe
 from captum.attr import DeepLiftShap
 
 
@@ -222,7 +224,7 @@ def calculate_attributions(model, X, model_output="profile",
     dev = next(model.parameters()).device
 
     for i in trange(0, len(X), 1, disable=not verbose):
-        _X = X[i]
+        _X = X[i].float()
 
         _references = dinucleotide_shuffle(_X, n_shuffles=n_shuffles).to(dev)
         _references = _references.type(_X.dtype)
@@ -235,3 +237,81 @@ def calculate_attributions(model, X, model_output="profile",
 
     attributions = torch.cat(attributions)
     return attributions
+
+@torch.no_grad()
+def projected_shap(attributions, seqs, bs=64, device='cpu'):
+    attributions_projected = []
+    for i in range(0, len(attributions), bs):
+        _attributions = attributions[i:i + bs].to(device)
+        _seqs = seqs[i:i + bs].to(device)
+        _attributions_projected = (_attributions * _seqs).sum(dim=1)
+        attributions_projected.append(_attributions_projected.detach().cpu().numpy())
+    attributions_projected = np.concatenate(attributions_projected)
+    return attributions_projected
+def attribution_to_bigwig(attributions,
+                          regions,
+                          chrom_size,
+                          mode='average', output='attribution.bigwig'):
+    """
+
+    Parameters
+    ----------
+    attributions
+    seqs
+    regions
+    mode
+    output
+
+    Returns
+    -------
+
+    """
+    regions = regions.copy()
+    regions.columns = ['chrom', 'start', 'end'] + list(regions.columns[3:])
+
+    bw = pyBigWig.open(output, 'w')
+    header = []
+
+    for chrom in chrom_size:
+        header.append((chrom, chrom_size[chrom]))
+    bw.addHeader(header, maxZooms=0)
+
+    regions = bioframe.cluster(regions)
+    regions['fake_id'] = np.arange(len(regions))
+    regions = regions.sort_values(by=['chrom', 'start', 'end'])
+    attributions = attributions[np.array(regions['fake_id'])]
+    cluster_stats = regions.drop_duplicates('cluster')
+    cluster_stats = cluster_stats.sort_values(by=['chrom', 'start', 'end'])
+    order_of_cluster = np.array(cluster_stats['cluster'])
+
+    for cluster in tqdm(order_of_cluster):
+        mask = regions['cluster'] == cluster
+        attributions_chrom = attributions[mask]
+        region_temp = regions[mask]
+        chroms, starts, ends = region_temp['chrom'], region_temp['start'], region_temp['end']
+        start_point = np.min(starts)
+        end_point = np.max(ends)
+        size = end_point - start_point + 1
+        importance_track = np.full((len(region_temp), size), np.nan)
+
+        ct = 0
+        for start, end, attribution in zip(starts, ends, attributions_chrom):
+            if end-start != attribution.shape[0]:
+                print ("shape incompatible", start, end, attribution.shape)
+            importance_track[ct, start-start_point:end-start_point] = attribution
+            ct += 1
+
+        importance_track = np.nanmean(importance_track, axis=0)
+        indx = ~np.isnan(importance_track)
+        chrom = np.array(chroms)[0]
+        bw.addEntries(str(chrom),
+                      np.where(indx)[0] + start_point,
+                      values=importance_track[indx].astype('float'), span=1, )
+    bw.close()
+
+
+
+
+
+
+

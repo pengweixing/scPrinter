@@ -1,15 +1,13 @@
-
 import os
 import sys
 
 import numpy as np
 import torch
 import pandas
-
 import pyfaidx
 import pyBigWig
 from tqdm.auto import tqdm
-
+from torch.utils.data import ConcatDataset
 from .utils import *
 
 
@@ -38,17 +36,26 @@ class ChromBPDataset(torch.utils.data.Dataset):
                  DNA_window,
                  signal_window,
                  max_jitter,
+                 min_counts,
+                 max_counts,
                  cached=False,
-                 device='cpu'):
+                 reverse_compliment=False,
+                 device='cpu',
+                 initialize=True):
+        self.signal_paths = signals
         self.signals = [pyBigWig.open(signal) for signal in signals]
+        self.ref_seq_path = ref_seq
         self.ref_seq = pyfaidx.Fasta(ref_seq)
-        self.chrom_size = {k:len(v[:].seq) for k,v in self.ref_seq.items()}
+        self.chrom_size = {k: len(v[:].seq) for k, v in self.ref_seq.items()}
         # print ("chrom_size")
         # for k,v in self.chrom_size.items():
         #     if "_" not in k:
         #         print (k,":",v)
 
         self.max_jitter = max_jitter
+        self.min_counts = min_counts
+        self.max_counts = max_counts
+        self.reverse_compliment = reverse_compliment
         self.DNA_window = DNA_window
         self.signal_window = signal_window
         self.DNA_flank = DNA_window // 2
@@ -56,24 +63,85 @@ class ChromBPDataset(torch.utils.data.Dataset):
         self.max_flank = max(self.DNA_flank, self.signal_flank)
         self.cached = cached
         self.device = device
+        self.summits = summits
 
-        summits_valid = np.array([self.validate_loci(chrom, summit) for
+        if self.min_counts is None:
+            self.min_counts = -1
+        if self.max_counts is None:
+            self.max_counts = 1e16
+
+        if initialize:
+            print("input summits", len(summits))
+            summits_valid = np.array([self.validate_loci(chrom,
+                                                         summit) for
+                                      chrom, summit in
+                                      zip(tqdm(summits.iloc[:, 0], desc='validating loci'),
+                                          summits.iloc[:, 1])])
+            print("valid summits after trimming edges", np.sum(summits_valid))
+            self.summits = summits.loc[summits_valid]
+
+            coverage = np.array([self.fetch_cov(chrom, summit) for
+                                 chrom, summit in
+                                 zip(tqdm(self.summits.iloc[:, 0], desc='fetching coverage'),
+                                     self.summits.iloc[:, 1])])
+
+            summits_valid = (coverage.min(axis=-1) > self.min_counts) & (coverage.max(axis=-1) < self.max_counts)
+            print("valid summits after min/max count filter", np.sum(summits_valid))
+            self.summits = self.summits.loc[summits_valid]
+            self.coverage = coverage[summits_valid]
+            self.summits = np.array(self.summits)
+
+            if self.cached:
+                self.cache_seqs = []
+                self.cache_signals = []
+                for chrom, summit in tqdm(self.summits, desc='Caching sequences'):
+                    DNA, signal = self.fetch_loci(chrom, summit)
+                    self.cache_seqs.append(DNA)
+                    self.cache_signals.append(signal)
+                self.cache_seqs = torch.stack(self.cache_seqs, dim=0)
+                self.cache_signals = torch.stack(self.cache_signals, dim=0)
+
+    def change_jitter(self, max_jitter):
+        self.max_jitter = max_jitter
+        summits_valid = np.array([self.validate_loci(chrom,
+                                                     summit) for
                                   chrom, summit in
-                                  zip(summits.iloc[:, 0], summits.iloc[:, 1])])
-        self.summits = np.array(summits.loc[summits_valid])
-        print("input summits", len(summits))
-        print("valid summits", len(self.summits))
+                                  zip(tqdm(self.summits[:, 0], desc='validating loci'),
+                                      self.summits[:, 1])])
+        print("valid summits after trimming edges", np.sum(summits_valid))
+        self.summits = self.summits[summits_valid]
+
+        self.coverage = np.array([self.fetch_cov(chrom, summit) for
+                                  chrom, summit in
+                                  zip(tqdm(self.summits[:, 0], desc='fetching coverage'),
+                                      self.summits[:, 1])])
 
         if self.cached:
-            self.cache_seqs = []
-            self.cache_signals = []
-            for chrom, summit in tqdm(self.summits, desc='Caching sequences'):
-                DNA, signal = self.fetch_loci(chrom, summit)
-                DNA, signal = self.apply_jitter(DNA, signal)
-                self.cache_seqs.append(DNA)
-                self.cache_signals.append(signal)
-            self.cache_seqs = torch.stack(self.cache_seqs, dim=0)
-            self.cache_signals = torch.stack(self.cache_signals, dim=0)
+            self.cache(force=True)
+
+    def cache(self, force=False):
+        if self.cached and not force:
+            print("Already cached")
+            return
+
+        self.cached = True
+        self.cache_seqs = []
+        self.cache_signals = []
+        for chrom, summit in tqdm(self.summits, desc='Caching sequences'):
+            DNA, signal = self.fetch_loci(chrom, summit)
+            self.cache_seqs.append(DNA)
+            self.cache_signals.append(signal)
+        self.cache_seqs = torch.stack(self.cache_seqs, dim=0)
+        self.cache_signals = torch.stack(self.cache_signals, dim=0)
+
+    def append(self, dataset):
+        self.summits = np.concatenate([self.summits, dataset.summits])
+        self.coverage = np.concatenate([self.coverage, dataset.coverage])
+        if self.cached or dataset.cached:
+            self.cache()
+            dataset.cache()
+            self.cache_seqs = torch.cat([self.cache_seqs, dataset.cache_seqs])
+            self.cache_signals = torch.cat([self.cache_signals, dataset.cache_signals])
 
     def to(self, device):
         self.device = device
@@ -84,42 +152,98 @@ class ChromBPDataset(torch.utils.data.Dataset):
 
     def apply_jitter(self, dna, signal):
         jitter = 0 if self.max_jitter == 0 else np.random.default_rng().integers(self.max_jitter * 2)
-        return dna[:, jitter:jitter+self.DNA_window], signal[:, jitter:jitter+self.signal_window]
-
-
+        return dna[:, jitter:jitter + self.DNA_window], signal[:, jitter:jitter + self.signal_window]
 
     def __getitem__(self, idx):
+        reshape = False
         if self.cached:
-            dnas, signals =  (self.cache_seqs[idx].to(self.device),
-                    self.cache_signals[idx].to(self.device))
+            dnas, signals = (self.cache_seqs[idx].to(self.device),
+                             self.cache_signals[idx].to(self.device))
+            if len(dnas.shape) == 2:
+                reshape = True
+                dnas = dnas[None]
+                signals = signals[None]
+
         else:
             summits = self.summits[idx]
-            reshape = False
             if len(summits.shape) == 1:
                 summits = summits[None]
                 reshape = True
             dnas, signals = [], []
             for summit in summits:
                 chrom, summit = summit
-                dna, signal =  self.fetch_loci(chrom, summit, device=self.device)
-                dna, signal = self.apply_jitter(dna, signal)
+                dna, signal = self.fetch_loci(chrom, summit, device=self.device)
+
                 dnas.append(dna)
                 signals.append(signal)
             dnas = torch.stack(dnas, dim=0)
             signals = torch.stack(signals, dim=0)
-            if reshape:
-                dnas = dnas[0]
-                signals = signals[0]
+        dnas_final, signals_final = [], []
+        for dna, signal in zip(dnas, signals):
+            dna, signal = self.apply_jitter(dna, signal)
+            if self.reverse_compliment:
+                if np.random.default_rng().random() > 0.5:
+                    dna = dna.flip(dims=(0, 1))
+                    signal = signal.flip(dims=(1,))
+
+            dnas_final.append(dna)
+            signals_final.append(signal)
+
+        dnas, signals = torch.stack(dnas_final, dim=0), torch.stack(signals_final, dim=0)
+        if reshape:
+            dnas = dnas[0]
+            signals = signals[0]
 
         return (dnas.float(), signals)
+
+    def downsample(self, num):
+        idx = torch.as_tensor(np.random.permutation(len(self.summits))[:num]).to(self.device)
+        summits = self.summits[idx]
+        coverage = self.coverage[idx]
+        if self.cached:
+            cache_seqs = self.cache_seqs[idx]
+            cache_signals = self.cache_signals[idx]
+        downsampled_dataset = ChromBPDataset(signals=self.signal_paths,
+                                             ref_seq=self.ref_seq_path,
+                                             summits=summits,
+                                             DNA_window=self.DNA_window,
+                                             signal_window=self.signal_window,
+                                             max_jitter=self.max_jitter,
+                                             min_counts=self.min_counts,
+                                             max_counts=self.max_counts,
+                                             cached=self.cached,
+                                             reverse_compliment=self.reverse_compliment,
+                                             initialize=False,
+                                             device=self.device)
+        downsampled_dataset.coverage = coverage
+        downsampled_dataset.summits = summits
+        if self.cached:
+            downsampled_dataset.cache_seqs = cache_seqs
+            downsampled_dataset.cache_signals = cache_signals
+        return downsampled_dataset
+
+    def filter_by_coverage(self, min_coverage, max_coverage):
+        valid = (self.coverage.sum(axis=-1) > min_coverage) & (self.coverage.sum(axis=-1) < max_coverage)
+        self.summits = self.summits[valid]
+        self.coverage = self.coverage[valid]
+        if self.cached:
+            self.cache_seqs = self.cache_seqs[valid]
+            self.cache_signals = self.cache_signals[valid]
+
+    def fetch_cov(self, chrom, summit):
+        cov = [np.nansum(signal.values(chrom,
+                                       summit - self.signal_flank,
+                                       summit + self.signal_flank, numpy=True))
+               for signal in self.signals]
+        return np.array(cov)
 
     def validate_loci(self, chrom, summit):
         if summit - self.max_flank - self.max_jitter < 0:
             return False
         if summit + self.max_flank + self.max_jitter >= self.chrom_size[chrom]:
             return False
-        return True
 
+        return True
 
     def fetch_loci(self, chrom, summit,
                    device='cpu'):
@@ -138,16 +262,16 @@ class ChromBPDataset(torch.utils.data.Dataset):
         tuple
             A tuple of two torch.Tensor objects: DNA sequence and signal track.
         """
-        DNA = DNA_one_hot(self.ref_seq[chrom][summit-self.DNA_flank-self.max_jitter:
-                                              summit+self.DNA_flank+self.max_jitter].seq.upper(),
+        DNA = DNA_one_hot(self.ref_seq[chrom][summit - self.DNA_flank - self.max_jitter:
+                                              summit + self.DNA_flank + self.max_jitter].seq.upper(),
                           device=device)
         signal = np.zeros((len(self.signals), (self.signal_flank + self.max_jitter) * 2))
         for i, signal_file in enumerate(self.signals):
             try:
                 signal[i, :] = np.nan_to_num(signal_file.values(
                     chrom,
-                    summit-self.signal_flank-self.max_jitter,
-                    summit+self.signal_flank+self.max_jitter))
+                    summit - self.signal_flank - self.max_jitter,
+                    summit + self.signal_flank + self.max_jitter))
             except:
                 print("signal error",
                       chrom,
@@ -159,33 +283,47 @@ class ChromBPDataset(torch.utils.data.Dataset):
         signal = torch.tensor(signal, dtype=torch.float32, device=device)
         return DNA, signal
 
-    
-class ChromBPDataLoader(torch.utils.data.DataLoader):
 
+class ChromBPDataLoader(torch.utils.data.DataLoader):
     def __init__(self,
-                 batch_size,
-                 num_workers,
-                 pin_memory,
-                 shuffle,
-                 signals,
-                 ref_seq,
-                 summits,
-                 DNA_window,
-                 signal_window,
-                 max_jitter,
-                 cached=False,
-                 device='cpu'
-                 ):
-        self.dataset = ChromBPDataset(signals,
-                                      ref_seq,
-                                      summits,
-                                      DNA_window,
-                                      signal_window,
-                                      max_jitter,
-                                      cached,
-                                      device)
+                 dataset=None,
+                 batch_size=64,
+                 num_workers=1,
+                 pin_memory=True,
+                 shuffle=True,
+                 **kwargs):
+        self.data_collection = None
+        if dataset is None:
+            self.dataset = ChromBPDataset(**kwargs)
+        elif type(dataset) is list:
+            self.data_collection = dataset
+            dataset_list = []
+            for data, num in dataset:
+                dataset_list.append(data.downsample(num))
+            self.dataset = ConcatDataset(dataset_list)
+
+        else:
+            self.dataset = dataset
+        # self.batch_size = batch_size
+        # self.num_workers = num_workers
+        # self.pin_memory = pin_memory
+        self.shuffle = shuffle
         super().__init__(self.dataset,
-                            batch_size=batch_size,
-                            num_workers=num_workers,
-                            pin_memory=pin_memory,
-                            shuffle=shuffle)
+                         batch_size=batch_size,
+                         num_workers=num_workers,
+                         pin_memory=pin_memory,
+                         shuffle=shuffle)
+
+    def resample(self):
+        if self.data_collection is not None:
+            dataset_list = []
+            for data, num in self.data_collection:
+                dataset_list.append(data.downsample(num))
+            return ChromBPDataLoader(ConcatDataset(dataset_list),
+                                     batch_size=self.batch_size,
+                                     num_workers=self.num_workers,
+                                     pin_memory=self.pin_memory,
+                                     shuffle=self.shuffle)
+        else:
+            return self
+

@@ -14,6 +14,7 @@ import MOODS
 from pyfaidx import Fasta
 import pybedtools
 from pathlib import Path
+from scipy.sparse import csr_matrix
 
 
 def get_stats_for_genome(fasta_file):
@@ -109,18 +110,50 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
         regions = resize_bed_df(regions, width, True)
     return regions
 
+def frags_to_insertions(data):
+    x = data.obsm['fragment_paired']
+    insertion = csr_matrix((np.ones_like(x.indices), x.indices, x.indptr), shape=x.shape) + \
+                csr_matrix((np.ones_like(x.indices), x.indices + x.data, x.indptr), shape=x.shape)
+    insertion.sum_duplicates()
+    insertion.sort_indices()
+    data.obsm['insertion'] = insertion
+    return data
+
 def check_snap_insertion(shift_left=0, shift_right=0):
-    temp_fragments = open("temp_fragments.tsv", "w")
+    temp_fragments = gzip.open("temp_fragments.tsv.gz", "wb")
+    # This checks the end to see if snapatac2 now would do insertion at end, or end-1
+    for i in range(100):
+        temp_fragments.write("chr1\t%d\t%d\tbarcode1\t1\n".encode() % (4, 100))
+    temp_fragments.close()
+    sys.stdout.flush()
+    data = snap.pp.import_data("temp_fragments.tsv.gz",
+                           chrom_sizes=snap.genome.hg38.chrom_sizes,
+                           min_num_fragments=0,
+                           shift_left=shift_left,
+                           shift_right=shift_right,
+                           n_jobs=1, chunk_size=1,
+                           file='testabcdefg.h5ad')
+    data = frags_to_insertions(data)
+    v = np.array(data.obsm['insertion'][0, :1000].toarray()).reshape((-1))
+    data.close()
+    os.remove("temp_fragments.tsv.gz")
+    os.remove("testabcdefg.h5ad")
+    # If true: The fixed version I compiled or they fixed it, else not fixed
+    return v[100] == 100
+
+
+def check_snap_insertion_old(shift_left=0, shift_right=0):
+    temp_fragments = gzip.open("temp_fragments.tsv.gz", "wt")
     for i in range(100):
         temp_fragments.write("chr1\t%d\t%d\tbarcode1\n" % (4, 4))
     temp_fragments.close()
     sys.stdout.flush()
-    data = snap.pp.import_data("temp_fragments.tsv",
+    data = snap.pp.import_data("temp_fragments.tsv.gz",
                                genome=snap.genome.hg38, min_num_fragments=0, min_tsse=0,
                                shift_left=shift_left,
                                shift_right=shift_right)
     v = np.array(data.obsm['insertion'][0, :10].toarray()).reshape((-1))
-    os.remove("temp_fragments.tsv")
+    os.remove("temp_fragments.tsv.gz")
     # If true: The fixed version I compiled or they fixed it, else not fixed
     return v[4] == 200
 
@@ -234,6 +267,23 @@ def df2cell_grouping(printer, barcodeGroups):
     for group in uniq_groups:
         grouping.append(list(bar[groups == group]))
     return grouping, uniq_groups
+
+def valide_regions(bed: pd.DataFrame, genome, inplace=True):
+
+    chromsize = genome.chrom_sizes
+    valid = []
+    for chrom, start, end in zip(bed.iloc[:, 0], bed.iloc[:, 1], bed.iloc[:, 2]):
+        if chrom not in chromsize:
+            valid.append(False)
+        elif start < 0 or end > chromsize[chrom]:
+            valid.append(False)
+        else:
+            valid.append(True)
+    valid = np.array(valid)
+    if inplace:
+        return bed.loc[valid, :]
+    else:
+        return valid
 
 
 def resize_bed_df(bed: pd.DataFrame,

@@ -111,13 +111,14 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
 
     if len(pathsToFrags) == 1:
         path = pathsToFrags[0]
-        if os.path.exists(path + '.gz'):
-            print ("using gzipped file: %s.gz" % path)
-            path = path + '.gz'
-        else:
-            print ("gzipping %s, because currently the backend requires gzipped file" % path)
-            os.system('gzip %s' % path)
-            path = path + '.gz'
+        if '.gz'not in path:
+            if os.path.exists(path + '.gz'):
+                print ("using gzipped file: %s.gz" % path)
+                path = path + '.gz'
+            else:
+                print ("gzipping %s, because currently the backend requires gzipped file" % path)
+                os.system('gzip %s' % path)
+                path = path + '.gz'
 
         data = snap.pp.import_data(path,
                                    file=savename,

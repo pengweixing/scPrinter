@@ -113,7 +113,7 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
 def frags_to_insertions(data):
     x = data.obsm['fragment_paired']
     insertion = csr_matrix((np.ones(len(x.indices) * 2, dtype='uint16'),
-                            np.concatenate([x.indices, x.indices + x.data], axis=0),
+                            np.stack([x.indices, x.indices + x.data], axis=-1).reshape((-1)),
                             x.indptr * 2), shape=x.shape)
     insertion.sort_indices()
     insertion.sum_duplicates()

@@ -6,7 +6,7 @@ from . import genome
 from .utils import *
 from .io import load_printer, PyPrinter
 import pyBigWig
-from tqdm.auto import tqdm
+from tqdm.auto import tqdm, trange
 from scipy.sparse import coo_matrix
 import numpy as np
 import anndata
@@ -14,6 +14,10 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import uuid
 import time
+import snapatac2 as snap
+import multiprocessing
+
+
 def import_data(path, barcode, gff_file, chrom_sizes, extra_plus_shift,
                 extra_minus_shift, tempname, **kwargs):
     if '.gz' not in path:
@@ -32,7 +36,7 @@ def import_data(path, barcode, gff_file, chrom_sizes, extra_plus_shift,
                                shift_left=extra_plus_shift,
                                shift_right=extra_minus_shift,
                                **kwargs)
-    data = frags_to_insertions(data)
+    data = frags_to_insertions(data, split=False)
     data.close()
     return tempname
 
@@ -129,33 +133,42 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
                                    shift_left=extra_plus_shift,
                                    shift_right=extra_minus_shift,
                                    **kwargs)
-        frags_to_insertions(data)
+        frags_to_insertions(data, split=True)
     else:
         # with multiple fragments, store them in memory and concat
         # Should be able to support snapatac2.anndataset in the future, but, let's keep it this way for now
         adatas = []
         p_list = []
-        pool = ProcessPoolExecutor(max_workers=20)
+        pool = ProcessPoolExecutor(max_workers=20, mp_context=multiprocessing.get_context("spawn"))
 
 
         ct = 0
+        bar = trange(len(pathsToFrags), desc="Importing fragments")
         for path, barcode in zip(pathsToFrags, barcodes):
             p_list.append(pool.submit(import_data, path, barcode,
                                       genome.fetch_gff(), genome.chrom_sizes,
                                       extra_plus_shift, extra_minus_shift,
                                       savename+"_part%d" %ct,**kwargs))
-            ct += 1
+
+
             # data = snap.pp.import_data(path,
-            #                            file=None,
+            #                            file=savename+"_part%d" %ct,
             #                            whitelist=barcode,
-            #                            gff_file=genome.fetch_gff(),
-            #                            chrom_size=genome.chrom_sizes,
+            #                            # gene_anno=genome.fetch_gff(),
+            #                            chrom_sizes=genome.chrom_sizes,
             #                            shift_left=extra_plus_shift,
             #                            shift_right=extra_minus_shift,
-            #                                        ** kwargs)
+            #                            **kwargs)
+            # frags_to_insertions(data)
+            # data.close()
+            # savepath = savename + "_part%d" % ct
+            ct += 1
+            bar.update(1)
+            bar.refresh()
         for p in tqdm(as_completed(p_list), total=len(p_list)):
-            path = p.result()
-            adatas.append((path.split("_")[-1],path))
+            savepath = p.result()
+            adatas.append((savepath.split("_")[-1],savepath))
+            sys.stdout.flush()
 
         data = snap.AnnDataSet(adatas=adatas, filename=savename+"_temp")
 
@@ -164,7 +177,18 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
         data2.obs_names = data.obs_names
         print ("start transferring insertions")
         start = time.time()
-        data2.obsm['insertion'] = data.adatas.obsm['insertion']
+        insertion = data.adatas.obsm['insertion']
+
+        indx = list(np.cumsum(data.uns['reference_sequences']['reference_seq_length']).astype('int'))
+        start = [0] + indx
+        end = indx
+        for chrom, start, end in zip(
+                data.uns['reference_sequences']['reference_seq_name'],
+                start,
+                end):
+            data2.obsm['insertion_%s' % chrom] = insertion[:, start:end].tocsc()
+
+
         print ("takes", time.time() - start)
         data2.uns['reference_sequences'] = data.uns['reference_sequences']
         data.close()

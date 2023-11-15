@@ -95,7 +95,8 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
             # regions_pr = dftopyranges(regions)
         elif "Gene:" in regions:
             regions = printer.gff_db[regions[5:]]
-            regions = pd.DataFrame({'Chromosome': [regions.chrom], 'Start': [regions.start]})
+            chrom, start = [regions.chrom], [regions.start if regions.strand == '+' else regions.end]
+            regions = pd.DataFrame({'Chromosome': chrom, 'Start': start})
             regions['End'] = regions['Start'] + int(printer.gene_region_width / 2)
             regions['Start'] -= int(printer.gene_region_width / 2)
         else:
@@ -110,14 +111,26 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
         regions = resize_bed_df(regions, width, True)
     return regions
 
-def frags_to_insertions(data):
+def frags_to_insertions(data, split=False):
     x = data.obsm['fragment_paired']
     insertion = csr_matrix((np.ones(len(x.indices) * 2, dtype='uint16'),
                             np.stack([x.indices, x.indices + x.data], axis=-1).reshape((-1)),
                             x.indptr * 2), shape=x.shape)
     insertion.sort_indices()
     insertion.sum_duplicates()
-    data.obsm['insertion'] = insertion
+    if split:
+        indx = list(np.cumsum(data.uns['reference_sequences']['reference_seq_length']).astype('int'))
+        start = [0] + indx
+        end = indx
+        for chrom, start, end in zip(
+                data.uns['reference_sequences']['reference_seq_name'],
+                start,
+                end):
+            data.obsm['insertion_%s' % chrom] =  insertion[:, start:end].tocsc()
+
+    else:
+        data.obsm['insertion'] = insertion
+    # data.obsm['insertion'] = insertion
     return data
 
 def check_snap_insertion(shift_left=0, shift_right=0):

@@ -302,6 +302,27 @@ class Motifs:
         # print ("finish preparing scanner")
         return scanner
 
+    def scan_once(self, chr, start, end,
+                  clean: bool = False,
+                  concat: bool = True,
+                  split_tfs: bool = True,
+                  strand: bool = True,
+                  ):
+        scanner = self.scanner
+        motif = self.all_motifs[self.select]
+        motifs_length = [m.length for m in motif]
+        motifs_name = [m.name for m in motif]
+        seq = self.genome_seq[chr][start:end].seq
+
+        # seq is of unicode format, need to convert to str
+        scan_res = scanner.scan(str(seq))
+        results = [[[xxx.pos, xxx.score] for xxx in xx] for xx in scan_res]
+
+        return _parse_scan_results_all(results,
+                                   motifs_length, motifs_name,
+                                   {'chr': chr, 'start': start, 'end': end, 'index':0},
+                                   self.tfs, clean, split_tfs, strand)
+
 
     def scan_motif(self, peaks_iter,
                     clean: bool = False,
@@ -334,7 +355,6 @@ class Motifs:
         """
 
         scanner = self.scanner
-
         maps = [[] for i in range(len(peaks_iter))]
         motif = self.all_motifs[self.select]
         motifs_length = [m.length for m in motif]
@@ -352,7 +372,8 @@ class Motifs:
             seq = self.genome_seq[chr][start:end].seq
 
             # seq is of unicode format, need to convert to str
-            results = [[[xxx.pos, xxx.score] for xxx in xx] for xx in scanner.scan(str(seq))]
+            scan_res = scanner.scan(str(seq))
+            results = [[[xxx.pos, xxx.score] for xxx in xx] for xx in scan_res]
 
             p_list.append(self.pool.submit(_parse_scan_results_all, results,
                                             motifs_length, motifs_name,

@@ -56,6 +56,72 @@ def strided_lastaxis(a, L):
     l, m, n = a.shape
     return np.lib.stride_tricks.as_strided(a, shape=(l, m, n - L + 1, L), strides=(s0, s1, s2, s2))
 
+@torch.no_grad()
+def fastRegionBindingScore(regionATAC, # Position-by-pseudobulk matrix of ATAC data for the current region
+                           Tn5Bias,  # Numeric vector of predicted Tn5 bias for the current region
+                           dispModels,  # Background dispersion model for center-vs-(center + flank) ratio insertion ratio
+                           BindingScoreModel,  # Model for predicting TF binding at any motif site
+                           contextRadius=100  # Local radius of model input (in bp)
+                            ):
+
+    width = len(Tn5Bias)
+    scales = BindingScoreModel['scales']
+    multiScaleFootprints = None
+
+    start = time.time()
+    if type(regionATAC) is tuple:
+        regionATAC = getRegionATAC(*regionATAC)
+    else:
+        regionATAC = regionATAC
+
+    for scale_index, scale in enumerate(scales):
+        # I changed the code in regionFootprintscore to make it consistent
+        footprintScores, _ = regionFootprintScore(regionATAC,
+                                               Tn5Bias,
+                                               dispModels[str(scale)],
+                                               scale,
+                                               scale,
+                                               None)
+        if multiScaleFootprints is None:
+            # shape of (group, scale, position)
+            multiScaleFootprints = np.zeros((footprintScores.shape[0], len(scales), footprintScores.shape[1]),
+                                            dtype='float32')
+        multiScaleFootprints[:, scale_index, :] = footprintScores
+
+    footprint_time = time.time() - start
+    # Only keep sites with distance to CRE edge >= contextRadius
+    start_site = np.arange(0, width - contextRadius * 2)
+    slice_width = 2 * contextRadius + 1
+    # This is the stride trick
+    # shape of, (group, scale, sites, 2 * contextRadius + 1)
+    siteFootprints = strided_lastaxis(multiScaleFootprints, slice_width)[:, :, start_site]
+    stride_time = time.time() - start
+    start = time.time()
+
+    # shape of (group, sites, scale, 2 * context Radius + 1)
+    # then reshaped to (group, sites, scale * (2 * context Radius + 1))
+    BindingScoreData = np.transpose(siteFootprints, axes=[0, 2, 1, 3]).reshape((siteFootprints.shape[0],
+                                                                                siteFootprints.shape[2], -1))
+
+    transpose_time = time.time() - start
+    start = time.time()
+
+    # score = torch_predict_BindingScore(BindingScoreData, BindingScoreModel)
+    if 'model' in BindingScoreModel:
+        score = BindingScoreModel['model'](torch.from_numpy(BindingScoreData).float()).numpy()
+    else:
+        score = jit_predict_BindingScore(torch.from_numpy(BindingScoreData).float(),
+                                         BindingScoreModel['footprintMean'],
+                                         BindingScoreModel['footprintSd'],
+                                         *BindingScoreModel['weights']).numpy()
+
+
+    pred_time = time.time() - start
+    del BindingScoreData, multiScaleFootprints, siteFootprints
+    return score[..., 0] # 0, because the NN outputs a dim 1.
+
+
+
 # Get predicted TF binding scores for a specific region
 def getRegionBindingScore(region_identifier, # an identifier for things that finished
                   regionATAC,  # Position-by-pseudobulk matrix of ATAC data for the current region

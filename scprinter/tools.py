@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import gc
+import sys
+
 import numpy as np
 import os
 os.environ["OMP_NUM_THREADS"] = '1'
@@ -24,7 +27,7 @@ import pandas as pd
 import pyranges
 from pathlib import Path
 from sklearn.metrics import pairwise_distances
-
+import time
 
 def set_global_disp_model(printer):
     globals()[printer.unique_string + "_dispModels"] = printer.dispersionModel
@@ -112,7 +115,8 @@ def _get_binding_score_batch(
         # If NULL, the region will be divided into equally sized tiles for TF binding scoring
         tileSize=10,  # Size of tiles if sites is NULL
         contextRadius=100,
-        unique_string=None,):
+        unique_string=None,
+        downsample=1,):
 
     result = []
     # Create a fake pyprinter object to pass on
@@ -131,6 +135,14 @@ def _get_binding_score_batch(
             site = sites[i]
 
         atac = _get_group_atac(printer, cell_grouping, regions.iloc[i])
+        if downsample < 1:
+            n_remove_insertions = int(np.sum(atac) * (1 - downsample))
+            v = atac.data
+            reduce = np.random.choice(len(v), n_remove_insertions, replace=True, p=v / np.sum(v))
+            reduce, reduce_ct = np.unique(reduce, return_counts=True)
+            v[reduce] -= reduce_ct
+            v[v < 0] = 0
+
         result.append(getTFBS.getRegionBindingScore(
             region_identifier,
             atac,
@@ -156,7 +168,10 @@ def get_binding_score(printer: PyPrinter,
                     save_key: str = None,
                     backed: bool = True,
                     overwrite: bool = False,
-                    motif_scanner: motifs.Motifs | None = None):
+                    motif_scanner: motifs.Motifs | None = None,
+                    tile:int=10,
+                    open_anndata=True,
+                    downsample=1):
 
     """
     Calculate the binding score for a given region and cell group, stores the result in the anndata object.
@@ -296,14 +311,13 @@ def get_binding_score(printer: PyPrinter,
         globals()[unique_string + "_dispModels"] = dispModels
         globals()[unique_string + "_bindingscoremodel"] = printer.bindingScoreModel[model_key]
 
-
         cell_grouping = cell_grouping2cell_grouping_idx(printer,
                                                         cell_grouping)
-
+        print ("get bias")
         seqBias = getBias.getPrecomputedBias(printer.insertion_file.uns['bias_path'],
                                              regions,
                                              savePath=None)
-
+        print ("finishing bias")
         small_chunk_size = min(int(math.ceil(len(regions) / nCores) + 1), 100)
 
         pool = ProcessPoolExecutor(max_workers=nCores)
@@ -313,7 +327,15 @@ def get_binding_score(printer: PyPrinter,
 
         chunk_ct = 0
         index_df = []
-        for i in trange(0, len(regions), small_chunk_size, desc='submitting jobs'):
+
+        bar1 = trange(0, len(regions), small_chunk_size, desc='submitting jobs')
+        bar = trange(len(region_identifiers), desc='collecting Binding prediction')
+        time = 0
+        if backed:
+            adata.close()
+            adata = h5py.File(save_path, 'r+', locking=False)
+            adata_obsm = adata['obsm']
+        for i in bar1:
             if motif_scanner is not None:
                 sites = motif_scanner.scan_motif(regions.iloc[i:i+small_chunk_size,], clean=False, concat=False)
                 new_sites = []
@@ -361,16 +383,49 @@ def get_binding_score(printer: PyPrinter,
                 sites,  # pyRanges object. Genomic ranges of motif matches in the current region
                 # Must have $score attribute which indicates how well the motif is matched (between 0 and 1)
                 # If NULL, the region will be divided into equally sized tiles for TF binding scoring
-                10,  # Size of tiles if sites is NULL
+                tile,  # Size of tiles if sites is NULL
                 contextRadius,
-                printer.unique_string
+                printer.unique_string,
+                downsample
             ))
+
+            if len(p_list) > nCores * 2:
+                for p in as_completed(p_list):
+                    rs = p.result()
+                    for r in rs:
+                        if 'BindingScore' not in r:
+                            continue
+                        time += r['time']
+                        identifier = r['region_identifier']
+                        if backed:
+                            adata_obsm.create_dataset(identifier, data=r['BindingScore'])
+                            adata_obsm[identifier].attrs['encoding-type'] = 'array'
+                            adata_obsm[identifier].attrs['encoding-version'] = '0.2.0'
+                            # adata.obsm[identifier] = r['BindingScore']
+                        else:
+                            adata.obsm[identifier] = r['BindingScore']
+                        # if motif_scanner is not None:
+                        #     sites = r['sites']
+                        #     sites['Chromosome'] = sites['Chromosome'].astype('str')
+                        #     sites['Strand'] = sites['Strand'].astype('str')
+                        #     sites['Score'] = sites['Score'].astype('float')
+                        #
+                    sys.stdout.flush()
+                    gc.collect()
+                    p_list.remove(p)
+                    bar.update(len(rs))
+                    del rs, p
+                    if len(p_list) <= nCores:
+                        break
+
+
         if motif_scanner is not None:
             pd.concat(index_df, axis=0).to_hdf(os.path.join(os.path.dirname(printer.file_path),
                                                             "%s_sites.h5ad" % save_key), 'site_id',
                                                mode='a', complevel=4, append=True)
-        bar = trange(len(region_identifiers), desc='collecting Binding prediction')
-        time = 0
+
+
+
         for p in as_completed(p_list):
             rs = p.result()
             for r in rs:
@@ -378,18 +433,30 @@ def get_binding_score(printer: PyPrinter,
                     continue
                 time += r['time']
                 identifier = r['region_identifier']
-                adata.obsm[identifier] = r['BindingScore']
+                if backed:
+                    adata_obsm.create_dataset(identifier, data=r['BindingScore'])
+                    adata_obsm[identifier].attrs['encoding-type'] = 'array'
+                    adata_obsm[identifier].attrs['encoding-version'] = '0.2.0'
+                    # adata.obsm[identifier] = r['BindingScore']
+                else:
+                    adata.obsm[identifier] = r['BindingScore']
                 # if motif_scanner is not None:
                 #     sites = r['sites']
                 #     sites['Chromosome'] = sites['Chromosome'].astype('str')
                 #     sites['Strand'] = sites['Strand'].astype('str')
                 #     sites['Score'] = sites['Score'].astype('float')
                 #
+            sys.stdout.flush()
+            gc.collect()
             bar.update(len(rs))
             del rs
         bar.close()
         pool.shutdown(wait=True)
         print ("finishes")
+        if backed:
+            adata.close()
+            if open_anndata:
+                adata = snap.read(save_path)
         printer.bindingscoreadata[save_key] = adata
         # return adata
 
@@ -460,7 +527,9 @@ def get_footprint_score(printer: PyPrinter,
                         nCores: int = 16, # Number of cores to use
                         save_key: str = None,
                         backed: bool = True,
-                        overwrite: bool = False
+                        overwrite: bool = False,
+                        chunksize: int | None = None,
+                        buffer_size: int | None = None
                         ):
     """
     Get footprint score for a given region and cell group
@@ -576,22 +645,43 @@ def get_footprint_score(printer: PyPrinter,
                                                   len(regions))),
                                     obs=df_obs, var=df_var)
         adata.uns['scales'] = np.array(modes)
-        printer.footprintsadata[save_key] = adata
         a = printer.uns['footprints']
         a[save_key] = str(save_path)
         printer.uns['footprints'] = a
 
-
-        small_chunk_size = min(max(int(16000 / len(group_names)), 100), 10000)
-        collect_num  = int(16000 / len(group_names) * 100  / small_chunk_size)
+        if chunksize is None:
+            small_chunk_size = min(max(int(16000 / len(group_names)), 100), 10000)
+        else:
+            small_chunk_size = chunksize
+        if buffer_size is None:
+            collect_num  = int(16000 / len(group_names) * 100  / small_chunk_size)
+        else:
+            collect_num = buffer_size
         print (small_chunk_size, collect_num)
         threadpool = ThreadPoolExecutor(max_workers=1)
 
         modes = list(modes)
 
-        def write(multimode_footprints, region_identifiers, obsm):
-            for result, regionID in zip(multimode_footprints, region_identifiers):
-                obsm[regionID] = result
+        if backed:
+            adata.close()
+            adata = h5py.File(save_path, 'r+', locking=False)
+            adata_obsm = adata['obsm']
+        else:
+            adata_obsm = adata.obsm
+            # return
+
+        def write(multimode_footprints, region_identifiers, obsm, backed):
+            if backed:
+                for result, id in zip(multimode_footprints, region_identifiers):
+                    obsm.create_dataset(id, data=result)
+                    obsm[id].attrs['encoding-type'] = 'array'
+                    obsm[id].attrs['encoding-version'] = '0.2.0'
+            else:
+                for result, regionID in zip(multimode_footprints, region_identifiers):
+                    obsm[regionID] = result
+            del multimode_footprints
+            sys.stdout.flush()
+            gc.collect()
 
         generator = footprint_generator(printer, cell_grouping,
                                                      regions, region_width,
@@ -599,9 +689,14 @@ def get_footprint_score(printer: PyPrinter,
                                                      flankRadius, nCores, small_chunk_size, collect_num)
 
         for multimode_footprints, regionID in generator:
-            threadpool.submit(write, multimode_footprints, regionID, adata.obsm)
+            threadpool.submit(write, multimode_footprints, regionID, adata_obsm, backed)
 
+        sys.stdout.flush()
+        printer.footprintsadata[save_key] = adata
         threadpool.shutdown(wait=True)
+        if backed:
+            adata.close()
+            adata = snap.read(save_path)
         # return adata
 
 def footprint_generator(printer: PyPrinter,

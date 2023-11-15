@@ -175,17 +175,18 @@ class PyPrinter():
             indx = list(np.cumsum(self.insertion_file.uns['reference_sequences']['reference_seq_length']).astype('int'))
             start = [0] + indx
             end = indx
-            self.insertion_profile = split_insertion_profile(
-                self.insertion_file.obsm['insertion'],
-                self.insertion_file.uns['reference_sequences']['reference_seq_name'],
-                start,
-                end, to_csc=True)
-            gc.collect()
+            # self.insertion_profile = split_insertion_profile(
+            #     self.insertion_file.obsm['insertion'],
+            #     self.insertion_file.uns['reference_sequences']['reference_seq_name'],
+            #     start,
+            #     end, to_csc=True)
+            self.insertion_profile = {}
+            for chrom in self.insertion_file.uns['reference_sequences']['reference_seq_name']:
+                self.insertion_profile[chrom] = self.insertion_file.obsm['insertion_%s' % chrom]
+                gc.collect()
         if set_global:
             unique_string = self.unique_string
-            print (unique_string)
             globals()[unique_string + "insertion_profile"] = self.insertion_profile
-
         return self.insertion_profile
 
     def close(self):

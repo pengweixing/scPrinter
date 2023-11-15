@@ -215,6 +215,7 @@ def regionFootprintScore(regionATAC_param,
     return pvalScoreMatrix, extra_info
 
 
+
 def fastMultiScaleFootprints(region_ATAC,
                              Tn5Bias,
                              dispersionModels,

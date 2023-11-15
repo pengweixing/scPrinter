@@ -1,5 +1,5 @@
 from .utils import *
-
+import gc
 
 def strided_axis0(a, L):
     # Store the shape and strides info
@@ -26,16 +26,27 @@ def getPrecomputedBias(precomputed_bias_path,
     # print (chrom_list)
     uniq_chrom = np.unique(chrom_list)
     width = end_list[0] - start_list[0]
-    with h5py.File(precomputed_bias_path, 'r') as dct:
-        precomputed_bias = {chrom : np.array(dct[chrom]) for chrom in uniq_chrom}
-    # Create the empty np.ndarray for final results
-    final_result = np.zeros((len(regions), width))
-    for chrom in uniq_chrom:
-        bias = precomputed_bias[chrom]
-        mask = chrom_list == chrom
+    # with h5py.File(precomputed_bias_path, 'r') as dct:
+    #     precomputed_bias = {chrom : np.array(dct[chrom]) for chrom in uniq_chrom}
+    # # Create the empty np.ndarray for final results
+    # final_result = np.zeros((len(regions), width))
+    # for chrom in uniq_chrom:
+    #     bias = precomputed_bias[chrom]
+    #     mask = chrom_list == chrom
+    #
+    #     bias_region_chrom = strided_axis0(bias, width)[start_list[mask]]
+    #     final_result[mask] = bias_region_chrom
 
-        bias_region_chrom = strided_axis0(bias, width)[start_list[mask]]
-        final_result[mask] = bias_region_chrom
+    final_result = np.zeros((len(regions), width))
+    with h5py.File(precomputed_bias_path, 'r') as dct:
+        for chrom in uniq_chrom:
+            bias = np.array(dct[chrom])
+            # bias = precomputed_bias[chrom]
+            mask = chrom_list == chrom
+            bias_region_chrom = strided_axis0(bias, width)[start_list[mask]]
+            final_result[mask] = bias_region_chrom
+            gc.collect()
+
     if savePath is not None:
         np.save(savePath, final_result)
     else:

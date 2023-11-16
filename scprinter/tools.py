@@ -692,11 +692,12 @@ def get_footprint_score(printer: PyPrinter,
             threadpool.submit(write, multimode_footprints, regionID, adata_obsm, backed)
 
         sys.stdout.flush()
-        printer.footprintsadata[save_key] = adata
+
         threadpool.shutdown(wait=True)
         if backed:
             adata.close()
             adata = snap.read(save_path)
+        printer.footprintsadata[save_key] = adata
         # return adata
 
 def footprint_generator(printer: PyPrinter,

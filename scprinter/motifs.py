@@ -436,7 +436,8 @@ class Motifs:
         # print('get_thresholds', time.time() - start)
         start = time.time()
         # print (thresholds_p, thresholds_m)
-
+        self.pool.shutdown(wait=True)
+        self.pool = ProcessPoolExecutor(max_workers=self.n_jobs)
         return np.array(matrices_p,dtype=object), np.array(thresholds_p,dtype=object), \
             np.array(matrices_m,dtype=object), np.array(thresholds_m,dtype=object)
 

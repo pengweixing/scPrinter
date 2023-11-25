@@ -16,6 +16,11 @@ def log1p_mse(log_predicted_counts, true_counts, reduction='mean'):
     return F.mse_loss(log_predicted_counts.reshape((-1)),
                       log_true.reshape((-1)), reduction=reduction)
 
+def shape_loss(pred, true, reduction='mean'):
+    true_proba = true / torch.sum(true, dim=-1, keepdim=True)
+    # print (true_proba.shape, pred.shape, true_proba)
+    return F.cross_entropy(pred, true_proba, reduction=reduction)
+    # return multinomial_negative_log_likelihood(pred, true).mean()
 
 # relative positional encoding functions
 # Positional encoding from enformer

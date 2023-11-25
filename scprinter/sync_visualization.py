@@ -348,7 +348,7 @@ def sync_footprints(printer: PyPrinter,
             footprint_axes[name] = '' if ct == 0 else str(ct + 1)
             ct += 1
             continue
-        elif type(importance) is str and '.bw' in importance:
+        elif type(importance) is str and (('.bw' in importance) or ('.bigwig' in importance)):
             group_seq_importance[name] = pyBigWig.open(importance, 'r')
         else:
             group_seq_importance[name] = importance

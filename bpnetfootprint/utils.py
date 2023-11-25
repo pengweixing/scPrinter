@@ -29,6 +29,3 @@ def DNA_one_hot(sequence,
     embed[[lookup[char] for char in sequence], torch.arange(len(sequence))] = 1
 
     return embed[:-1, :]
-
-
-

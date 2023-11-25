@@ -70,6 +70,7 @@ class ChromBPDataset(torch.utils.data.Dataset):
         if self.max_counts is None:
             self.max_counts = 1e16
 
+        # summits.iloc[:, 1] = summits.iloc[:, 1].astype(int)
         if initialize:
             print("input summits", len(summits))
             summits_valid = np.array([self.validate_loci(chrom,

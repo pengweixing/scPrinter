@@ -1,3 +1,7 @@
+"""
+This file defines the modules that is necessary to create a chromBPNet
+"""
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,7 +11,7 @@ import copy
 from .Functions import *
 from .evaluation import *
 
-Pass = nn.Identity
+
 class DilatedCNN(nn.Module):
     """
     This part only takes into account the Dilated CNN stack

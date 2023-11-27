@@ -877,6 +877,7 @@ def nonlinear(
     grad_output: (dLoss / dlayer_out)
     https://github.com/pytorch/pytorch/issues/12331
     """
+    # print (module)
     delta_in, delta_out = _compute_diffs(inputs, outputs)
 
     new_grad_inp = torch.where(

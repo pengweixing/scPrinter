@@ -5,11 +5,11 @@ import os.path
 from . import genome
 from .utils import *
 from .io import load_printer, PyPrinter
+from scprinter.backup.shift_detection import detect_shift
 import pyBigWig
 from tqdm.auto import tqdm, trange
 from scipy.sparse import coo_matrix
 import numpy as np
-import anndata
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import uuid
@@ -47,6 +47,7 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
                     genome: genome.Genome,
                     plus_shift: int = 4,
                     minus_shift: int = -5,
+                    auto_detect_shift: bool = True,
                     unique_string: str | None = None,
                     **kwargs):
 
@@ -89,6 +90,12 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
 
     else:
         pathsToFrags = pathToFrags
+
+    if auto_detect_shift:
+        print ("You are now using the beta auto_detect_shift function, this overwrites the plus_shift and minus_shift you provided")
+        print ("If you believe the auto_detect_shift is wrong, please set auto_detect_shift=False")
+        plus_shift, minus_shift = detect_shift(pathsToFrags[0], genome)
+        print ("detected plus_shift and minus_shift are", plus_shift, minus_shift)
 
     # this is equivalent to do +4/-4 shift,
     # because python is 0-based, and I'll just use the right end as index
@@ -205,6 +212,8 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
 
     return load_printer(savename, genome)
 
+def collapse_barcodes(*args, **kwargs):
+    sync_footprints(*args, **kwargs)
 
 def sync_footprints(printer: PyPrinter,
                     cell_grouping: list[list[str]] | list[str] | np.ndarray,
@@ -253,7 +262,7 @@ def sync_footprints(printer: PyPrinter,
             sig = insertion_profile[chrom]
             length = sig.shape[-1]
             header.append((chrom, length))
-        bw.addHeader(header, maxZooms=0)
+        bw.addHeader(header, maxZooms=10)
         for chrom in tqdm(chrom_list):
             sig = insertion_profile[chrom]
             for i in range(0, sig.shape[-1], chunksize):
@@ -274,5 +283,69 @@ def sync_footprints(printer: PyPrinter,
         a[str(name)] = str(path)
 
     printer.insertion_file.uns['group_bigwig'] = a
+
+def seq_model_config(printer: PyPrinter,
+                     peak_file: str | Path,
+                     cell_grouping: list[list[str]] | list[str] | np.ndarray,
+                     group_names: list[str] | str,
+                     overwrite_bigwig=True,
+                     model_name=None,
+                     model_configs={}):
+    if type(group_names) not in [np.ndarray, list]:
+        group_names = [group_names]
+        cell_grouping = [cell_grouping]
+    if len(group_names) > 1:
+        raise NotImplementedError("Currently only support one group at a time")
+    if model_name is None and 'savename' not in model_configs:
+        raise ValueError("Please provide a model name or a savename in model_configs")
+    if 'group_bigwig' not in printer.insertion_file.uns:
+        printer.insertion_file.uns['group_bigwig'] = {}
+
+    for name, grouping in zip(group_names, cell_grouping):
+        if name in printer.insertion_file.uns['group_bigwig']:
+            if not overwrite_bigwig:
+                print ("bigwig for %s already exists, skip" % name)
+                continue
+        sync_footprints(printer, grouping, name)
+
+    template_json = {
+      "peaks": peak_file,
+      "signals": [printer.insertion_file.uns['group_bigwig'][name] for name in group_names],
+      "bias": printer.insertion_file.uns['bias_bw'],
+      "max_jitter": 128,
+      "reverse_compliment": True,
+      "n_filters": 768,
+      "bottleneck_factor": 0.5,
+      "amp": True,
+      "ema": True,
+      "groups": 1,
+      "n_inception_layers": 8,
+      "n_layers": 8,
+      "inception_layers_after": True,
+      "activation": "gelu",
+      "batch_norm_momentum": 0.1,
+      "depthwise_separable": False,
+      "activation_in_between": False,
+      "dilation_base": 1,
+      "rezero": False,
+      "batch_norm": True,
+      "batch_size": 64,
+      "head_kernel_size": 1,
+      "kernel_size": 3,
+      "weight_decay": 1e-3,
+      "lr": 1e-3,
+      "scheduler": False,
+      "savename": model_name,
+      "replicate": 1,
+      "coverage_weight": 0.1,
+      "no_inception": False,
+      "inception_version": 2
+    }
+    for key in model_configs:
+        template_json[key] = model_configs[key]
+
+    return template_json
+
+
 
 

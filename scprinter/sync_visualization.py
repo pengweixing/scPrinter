@@ -588,8 +588,12 @@ def _bigwig_bindingscore(insertion, bias, model_key, chrom, s, e, pad=0,  extra=
     return v
 
 
+def set_global_var(printer):
+    global dispModels, bindingScoreModels
+    dispModels = printer.dispersionModel
+    bindingScoreModels = printer.bindingScoreModel
 
-def _bigwig_footprint(insertion, bias, chrom, s, e, pad=0, extra=None):
+def _bigwig_footprint(insertion, bias, chrom, s, e, pad=0, extra=None, return_pval=True, smoothRadius=5):
     # insertion = pyBigWig.open(insertion, 'r')
     # bias = pyBigWig.open(bias, 'r')
     b = np.array(bias.values(chrom, s - pad, e + pad))
@@ -602,7 +606,9 @@ def _bigwig_footprint(insertion, bias, chrom, s, e, pad=0, extra=None):
     v = fastMultiScaleFootprints(a[None],
                                  b,
                                  dispModels,
-                                 modes=np.arange(2, 101)
+                                 modes=np.arange(2, 101),
+                                 smoothRadius=smoothRadius,
+                                 return_pval=return_pval
                                  )[0]
     # print (nan1, nan2)
     if pad > 0:
@@ -861,7 +867,7 @@ def sync_footprints_advanced(printer: PyPrinter,
                                     y=v[mask],
                                     showlegend=False, width=1, marker_line_width=0), row=i + 1, col=1)
             fig.layout['xaxis%s' % postfix]['range'] = [init_s, init_e]
-            fig.layout['yaxis%s' % postfix]['range'] = [np.quantile(v[mask], 0.01), np.quantile(v[mask], 0.99)]
+            fig.layout['yaxis%s' % postfix]['range'] = [0, int(np.quantile(v[mask], 0.99))]
             fig.layout['xaxis%s' % postfix]['visible'] = False
             if not encounter_first_foot:
                 first_foot += 1
@@ -1011,8 +1017,8 @@ def sync_footprints_advanced(printer: PyPrinter,
                     x = np.arange(s, e)[mask]
                     v = v[mask]
                     update_track[traces_start[i]] = ({'x': x, 'y': v})
-                    fig.layout['yaxis%s' % postfix]['range'] = [np.quantile(v, 0.01),
-                                                                np.quantile(v, 0.99)]
+                    fig.layout['yaxis%s' % postfix]['range'] = [0,
+                                                                int(np.quantile(v, 0.99))]
                 else:
                     raise ValueError(f"Unknown type {type_}")
 

@@ -31,8 +31,13 @@ def getRegionATAC(select,  # np array of (, 3): position, group, count
     return matrix
 
 
+
+
+
 # Doing the same thing as conv in R, but more generalizable
 def rz_conv(a, n=2):
+    if n == 0:
+        return a
     # a can be shape of (batch, sample,...,  x) and x will be the dim to be conv on
     # pad first:
     shapes = np.array(a.shape)
@@ -81,7 +86,8 @@ def footprintScoring_multi(Tn5Insertion,
                            dispersionModel,
                            # Background dispersion model for center-vs-(center + flank) ratio insertion ratio
                            footprintRadius=10,  # Radius of the footprint region
-                           flankRadius=10  # Radius of the flanking region (not including the footprint region)
+                           flankRadius=10,  # Radius of the flanking region (not including the footprint region)
+                           return_pval=True
                            ):
     modelWeights = dispersionModel['modelWeights']
 
@@ -94,6 +100,7 @@ def footprintScoring_multi(Tn5Insertion,
     insertionWindowSums = footprintWindowSum(Tn5Insertion,
                                              footprintRadius,
                                              flankRadius)
+    # print (insertionWindowSums['center'].shape, biasWindowSums['center'].shape)
     leftTotalInsertion = insertionWindowSums['center'] + insertionWindowSums['leftFlank']
     rightTotalInsertion = insertionWindowSums['center'] + insertionWindowSums['rightFlank']
     # Prepare input data (foreground features) for the dispersion model
@@ -129,26 +136,35 @@ def footprintScoring_multi(Tn5Insertion,
     leftPredRatioSD = predDispersion[..., 1] #- predDispersion2[..., 1]
     rightPredRatioMean = predDispersion[..., 2] #- predDispersion2[..., 2]
     rightPredRatioSD = predDispersion[..., 3] #- predDispersion2[..., 3]
-
+    leftPredRatioSD[leftPredRatioSD < 0] = 0
+    rightPredRatioSD[rightPredRatioSD < 0] = 0
     # Calculate foreground (observed) center-vs-(center + flank) ratio
     fgLeftRatio = insertionWindowSums['center'] / leftTotalInsertion
     fgRightRatio = insertionWindowSums['center'] / rightTotalInsertion
 
-    # Compute p-value based on background mean and dispersion
-    leftPval = scipy.stats.norm.cdf(fgLeftRatio, leftPredRatioMean, leftPredRatioSD) #/ scipy.stats.norm.cdf(fgLeftRatioBias, leftPredRatioMean2, leftPredRatioSD2)
+    if return_pval:
+        # Compute p-value based on background mean and dispersion
+        leftPval = scipy.stats.norm.cdf(fgLeftRatio, leftPredRatioMean, leftPredRatioSD) #/ scipy.stats.norm.cdf(fgLeftRatioBias, leftPredRatioMean2, leftPredRatioSD2)
 
-    # This is to make it consistent with R pnorm
-    leftPval[np.isnan(leftPval)] = 1
-    rightPval = scipy.stats.norm.cdf(fgRightRatio, rightPredRatioMean, rightPredRatioSD) #/ scipy.stats.norm.cdf(fgRightRatioBias, rightPredRatioMean2, rightPredRatioSD2)
+        # This is to make it consistent with R pnorm
+        leftPval[np.isnan(leftPval)] = 1
+        rightPval = scipy.stats.norm.cdf(fgRightRatio, rightPredRatioMean, rightPredRatioSD) #/ scipy.stats.norm.cdf(fgRightRatioBias, rightPredRatioMean2, rightPredRatioSD2)
 
-    rightPval[np.isnan(rightPval)] = 1
+        rightPval[np.isnan(rightPval)] = 1
 
-    # Combine test results for left flank and right flank by taking the bigger pval
-    p = np.maximum(leftPval, rightPval)
+        # Combine test results for left flank and right flank by taking the bigger pval
+        p = np.maximum(leftPval, rightPval)
 
-    # Mask positions with zero coverage on either flanking side
-    p[(leftTotalInsertion < 1) | (rightTotalInsertion < 1)] = 1
-    return p
+        # Mask positions with zero coverage on either flanking side
+        p[(leftTotalInsertion < 1) | (rightTotalInsertion < 1)] = 1
+        return p
+    else:
+        # return z-score
+        leftZ = (fgLeftRatio - leftPredRatioMean) / leftPredRatioSD
+        rightZ = (fgRightRatio - rightPredRatioMean) / rightPredRatioSD
+        z = np.maximum(leftZ, rightZ)
+        return z
+
 
 # numpy version
 def predictDispersion(x, modelWeights):
@@ -181,7 +197,8 @@ def regionFootprintScore(regionATAC_param,
                          footprintRadius,
                          flankRadius,
                          extra_info, # extra_info to be returned, so the parent process would know which child it is.
-                        smoothRadius=None
+                        smoothRadius=None,
+                         return_pval=True
                          ):
     with warnings.catch_warnings(), torch.no_grad():
         warnings.simplefilter("ignore")
@@ -196,22 +213,43 @@ def regionFootprintScore(regionATAC_param,
             Tn5Bias=Tn5Bias,
             dispersionModel=dispersionModel,
             footprintRadius=footprintRadius,
-            flankRadius=flankRadius
+            flankRadius=flankRadius,
+            return_pval=return_pval
         )
-        if smoothRadius is None:
-            smoothRadius = int(footprintRadius / 2)
-        footprintPvalMatrix[np.isnan(footprintPvalMatrix)] = 1 # Set NA values to be pvalue = 1
-        # print (footprintPvalMatrix, np.sum(np.isnan(footprintPvalMatrix)), np.sum(np.isinf(footprintPvalMatrix)))
-        pvalScoreMatrix = -np.log10(footprintPvalMatrix)
-        pvalScoreMatrix[np.isnan(pvalScoreMatrix)] = 0
-        pvalScoreMatrix[np.isinf(pvalScoreMatrix)] = 20
-        maximum_filter_size = [0] * len(pvalScoreMatrix.shape)
-        maximum_filter_size[-1] = 2 * smoothRadius
-        pvalScoreMatrix = maximum_filter(pvalScoreMatrix, tuple(maximum_filter_size), origin=-1)
-        # Changed to smoothRadius.
-        pvalScoreMatrix = rz_conv(pvalScoreMatrix, smoothRadius) / (2 * smoothRadius)
-        pvalScoreMatrix[np.isnan(pvalScoreMatrix)] = 0
-        pvalScoreMatrix[np.isinf(pvalScoreMatrix)] = 20
+        if return_pval:
+            if smoothRadius is None:
+                smoothRadius = int(footprintRadius / 2)
+            footprintPvalMatrix[np.isnan(footprintPvalMatrix)] = 1 # Set NA values to be pvalue = 1
+            # print (footprintPvalMatrix, np.sum(np.isnan(footprintPvalMatrix)), np.sum(np.isinf(footprintPvalMatrix)))
+            pvalScoreMatrix = -np.log10(footprintPvalMatrix)
+            pvalScoreMatrix[np.isnan(pvalScoreMatrix)] = 0
+            pvalScoreMatrix[np.isinf(pvalScoreMatrix)] = 20
+            if smoothRadius > 0:
+                maximum_filter_size = [0] * len(pvalScoreMatrix.shape)
+                maximum_filter_size[-1] = 2 * smoothRadius
+                pvalScoreMatrix = maximum_filter(pvalScoreMatrix, tuple(maximum_filter_size), origin=-1)
+                # Changed to smoothRadius.
+                pvalScoreMatrix = rz_conv(pvalScoreMatrix, smoothRadius) / (2 * smoothRadius)
+            pvalScoreMatrix[np.isnan(pvalScoreMatrix)] = 0
+            pvalScoreMatrix[np.isinf(pvalScoreMatrix)] = 20
+        else:
+            # pvalScoreMatrix = footprintPvalMatrix
+            if smoothRadius is None:
+                smoothRadius = int(footprintRadius / 2)
+            # footprintPvalMatrix[np.isnan(footprintPvalMatrix)] = 1 # Set NA values to be pvalue = 1
+            # print (footprintPvalMatrix, np.sum(np.isnan(footprintPvalMatrix)), np.sum(np.isinf(footprintPvalMatrix)))
+            pvalScoreMatrix = footprintPvalMatrix
+            # pvalScoreMatrix[np.isnan(pvalScoreMatrix)] = 0
+            # pvalScoreMatrix[np.isinf(pvalScoreMatrix)] = 20
+            if smoothRadius > 0:
+                maximum_filter_size = [0] * len(pvalScoreMatrix.shape)
+                maximum_filter_size[-1] = 2 * smoothRadius
+                pvalScoreMatrix = maximum_filter(pvalScoreMatrix, tuple(maximum_filter_size), origin=-1)
+                # Changed to smoothRadius.
+                pvalScoreMatrix = rz_conv(pvalScoreMatrix, smoothRadius) / (2 * smoothRadius)
+            # pvalScoreMatrix[np.isnan(pvalScoreMatrix)] = 0
+            # pvalScoreMatrix[np.isinf(pvalScoreMatrix)] = 20
+
     return pvalScoreMatrix, extra_info
 
 
@@ -222,7 +260,9 @@ def fastMultiScaleFootprints(region_ATAC,
                              modes = np.arange(2, 101),
                              footprintRadius=None, # Radius of the footprint region
                              flankRadius=None, # Radius of the flanking region (not including the footprint region)
-                             extra_info = None
+                             smoothRadius=5,
+                             extra_info = None,
+                             return_pval=True,
                              ):
     return_array = None
     if footprintRadius is None:
@@ -244,7 +284,8 @@ def fastMultiScaleFootprints(region_ATAC,
             r1,
             r2,
             mode,
-            5,)
+            smoothRadius=smoothRadius,
+            return_pval=return_pval)
         # result, mode = p.result()
         # bar.update(1)
         if return_array is None:

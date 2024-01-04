@@ -12,7 +12,7 @@ from . import getTFBS
 from . import getBias
 from . import getFootprint
 from .io import PyPrinter
-from .fetch import _get_group_atac
+from .fetch import _get_group_atac, _get_group_atac_bw
 from .utils import *
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 import anndata
@@ -20,9 +20,9 @@ import itertools
 import warnings
 import math
 import torch
-from tqdm.auto import trange
+from tqdm.auto import trange, tqdm
 import snapatac2 as snap
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, vstack, csc_matrix
 import pandas as pd
 import pyranges
 from pathlib import Path
@@ -116,7 +116,8 @@ def _get_binding_score_batch(
         tileSize=10,  # Size of tiles if sites is NULL
         contextRadius=100,
         unique_string=None,
-        downsample=1,):
+        downsample=1,
+        strand='*'):
 
     result = []
     # Create a fake pyprinter object to pass on
@@ -152,7 +153,8 @@ def _get_binding_score_batch(
             bindingscoremodel,
             site,
             tileSize,
-            contextRadius))
+            contextRadius,
+            strand))
 
         del atac
     return result
@@ -169,9 +171,12 @@ def get_binding_score(printer: PyPrinter,
                     backed: bool = True,
                     overwrite: bool = False,
                     motif_scanner: motifs.Motifs | None = None,
+                    manual_sites: list[pd.DataFrame] | None = None,
                     tile:int=10,
                     open_anndata=True,
-                    downsample=1):
+                    downsample=1,
+                    strand="*",
+                    cache_factor=2,):
 
     """
     Calculate the binding score for a given region and cell group, stores the result in the anndata object.
@@ -360,6 +365,7 @@ def get_binding_score(printer: PyPrinter,
                     siteFilter = (relativePos > contextRadius) & (relativePos <= (width - contextRadius))
                     site = site.iloc[siteFilter]
                     new_sites.append(site)
+
                 sites = new_sites
                 if any([len(xx) > 0 for xx in sites]):
                     pd.concat([xx for xx in sites if len(xx) > 0], axis=0).to_hdf(os.path.join(os.path.dirname(printer.file_path),
@@ -373,7 +379,8 @@ def get_binding_score(printer: PyPrinter,
 
                     chunk_ct += 1
 
-
+            if manual_sites is not None:
+                sites = manual_sites[i:i+small_chunk_size]
             p_list.append(pool.submit(
                 _get_binding_score_batch,
                 region_identifiers[i:i+small_chunk_size],
@@ -386,14 +393,16 @@ def get_binding_score(printer: PyPrinter,
                 tile,  # Size of tiles if sites is NULL
                 contextRadius,
                 printer.unique_string,
-                downsample
+                downsample,
+                strand
             ))
 
-            if len(p_list) > nCores * 2:
+            if len(p_list) > nCores * cache_factor:
                 for p in as_completed(p_list):
                     rs = p.result()
                     for r in rs:
                         if 'BindingScore' not in r:
+                            print (r, "error?")
                             continue
                         time += r['time']
                         identifier = r['region_identifier']
@@ -430,6 +439,7 @@ def get_binding_score(printer: PyPrinter,
             rs = p.result()
             for r in rs:
                 if 'BindingScore' not in r:
+                    print(r, "error?")
                     continue
                 time += r['time']
                 identifier = r['region_identifier']
@@ -466,23 +476,34 @@ def _get_footprint_score_onescale(region_identifiers,
                                   regions,  # pyRanges object for the current region
                                   footprintRadius,
                                   flankRadius,
+                                  smoothRadius,
                                   mode,
                                   id_,
-                                  unique_string):
+                                  unique_string,
+                                  return_pval,
+                                  bigwigmode=False):
     result = None
-    insertion_profile = globals()[unique_string + "insertion_profile"]
+    if not bigwigmode:
+        insertion_profile = globals()[unique_string + "insertion_profile"]
+        printer = PyPrinter(insertion_profile=insertion_profile)
+    else:
+        dict1 = globals()[unique_string + "group_bigwig"]
+
     dispModels = globals()[unique_string + "_dispModels"]
 
     # Create a fake pyprinter object to pass on
     # Why we need a fake one?
     # Because these functions are created to be compatible with PyPrinter centered objects
     # But it would be slow to pass the real printer project, because python would pickle everything
-    printer = PyPrinter(insertion_profile=insertion_profile)
+
     for i, region_identifier in enumerate(region_identifiers):
         if i % 1000 == 0 & i > 0:
             print (i)
         # assumes the cell_grouping
-        atac = _get_group_atac(printer, cell_grouping, regions.iloc[i])
+        if bigwigmode:
+            atac = _get_group_atac_bw(dict1, cell_grouping, regions.iloc[i])
+        else:
+            atac = _get_group_atac(printer, cell_grouping, regions.iloc[i])
         r, mode = getFootprint.regionFootprintScore(
             atac,
             Tn5Bias[i],
@@ -490,13 +511,14 @@ def _get_footprint_score_onescale(region_identifiers,
             footprintRadius,
             flankRadius,
             mode,
-            5, )
+            smoothRadius,
+            return_pval)
         if result is None:
             result = np.zeros((len(regions), r.shape[0], r.shape[-1]))
         result[i, :, :] = r
     return result, mode, id_
 
-def _unify_modes(modes, footprintRadius, flankRadius):
+def _unify_modes(modes, footprintRadius, flankRadius, smoothRadius):
     if modes is None:
         modes = np.arange(2, 101)
     # we want a list of modes, but also compatible with one mode
@@ -509,27 +531,38 @@ def _unify_modes(modes, footprintRadius, flankRadius):
     if flankRadius is None:
         flankRadius = modes
 
+    if smoothRadius is None:
+        smoothRadius = [int(x / 2) for x in modes]
+
+
     # Again, expct to see a list, if not, create one
     if type(footprintRadius) is int:
         footprintRadius = [footprintRadius]
     if type(flankRadius) is int:
         flankRadius = [flankRadius]
-    return modes, footprintRadius, flankRadius
+    if type(smoothRadius) is int:
+        smoothRadius = [smoothRadius] * len(footprintRadius)
+
+
+    return modes, footprintRadius, flankRadius, smoothRadius
 
 def get_footprint_score(printer: PyPrinter,
-                        cell_grouping: list[str] | list[list[str]] | np.ndarray,
+                        cell_grouping: list[str] | list[list[str]] | np.ndarray | 'bigwig',
                         group_names: list[str] | str,
                         regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
                         region_width: int | None = None,
                         modes: int | list[int] | np.ndarray | None = None, # int or list of int. This is used for retrieving the correct dispersion model.
                         footprintRadius: int | list[int] | np.ndarray | None = None, # Radius of the footprint region
                         flankRadius: int | list[int] | np.ndarray | None = None, # Radius of the flanking region (not including the footprint region)
+                        smoothRadius: int |  list[int] | np.ndarray | None  = 5, # Radius of the smoothing region (not including the footprint region)
                         nCores: int = 16, # Number of cores to use
                         save_key: str = None,
                         backed: bool = True,
                         overwrite: bool = False,
                         chunksize: int | None = None,
-                        buffer_size: int | None = None
+                        buffer_size: int | None = None,
+                        return_pval: bool = True,
+                        collapse_barcodes: bool = False,
                         ):
     """
     Get footprint score for a given region and cell group
@@ -589,11 +622,20 @@ def get_footprint_score(printer: PyPrinter,
     """
     with warnings.catch_warnings(), torch.no_grad():
         warnings.simplefilter("ignore")
+        bigwigmode = False
+        modes, footprintRadius, flankRadius, smoothRadius = _unify_modes(modes, footprintRadius, flankRadius, smoothRadius)
+        if cell_grouping == 'bigwig':
+            bigwigmode = True
+            print ("footprint from bigwig mode")
 
-        modes, footprintRadius, flankRadius = _unify_modes(modes, footprintRadius, flankRadius)
         if type(group_names) not in [np.ndarray, list]:
             group_names = [group_names]
-            cell_grouping = [cell_grouping]
+            if cell_grouping != 'bigwig':
+                cell_grouping = [cell_grouping]
+        if bigwigmode:
+            if any([name not in printer.insertion_file.uns['group_bigwig'] for name in group_names]):
+                raise ValueError(f"group_names not in bigwig")
+            cell_grouping = group_names
 
         regions = regionparser(regions, printer, region_width)
         region_identifiers = df2regionidentifier(regions)
@@ -620,7 +662,7 @@ def get_footprint_score(printer: PyPrinter,
 
         width = np.array(regions.iloc[0])
         width = width[2] - width[1]
-        estimated_filesize = width * len(regions) * len(cell_grouping) * len(modes) * 32 * 1.16e-10
+        estimated_filesize = width * len(regions) * len(group_names) * len(modes) * 32 * 1.16e-10
         print ("estimated file size: %.2f GB" %(estimated_filesize))
 
         # results will be saved in a new key
@@ -686,7 +728,10 @@ def get_footprint_score(printer: PyPrinter,
         generator = footprint_generator(printer, cell_grouping,
                                                      regions, region_width,
                                                      modes, footprintRadius,
-                                                     flankRadius, nCores, small_chunk_size, collect_num)
+                                                     flankRadius, smoothRadius,
+                                        nCores, small_chunk_size, collect_num,
+                                        return_pval=return_pval, bigwigmode=bigwigmode,
+                                        collapse_barcodes=collapse_barcodes)
 
         for multimode_footprints, regionID in generator:
             threadpool.submit(write, multimode_footprints, regionID, adata_obsm, backed)
@@ -701,17 +746,22 @@ def get_footprint_score(printer: PyPrinter,
         # return adata
 
 def footprint_generator(printer: PyPrinter,
-                        cell_grouping: list[str] | list[list[str]] | np.ndarray,
+                        cell_grouping: list[str] | list[list[str]] | np.ndarray ,
                         regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
                         region_width: int | None = None,
                         modes: int | list[int] | np.ndarray | None = None, # int or list of int. This is used for retrieving the correct dispersion model.
                         footprintRadius: int | list[int] | np.ndarray | None = None, # Radius of the footprint region
                         flankRadius: int | list[int] | np.ndarray | None = None, # Radius of the flanking region (not including the footprint region)
+                        smoothRadius: int | list[int] | np.ndarray | None = 5, # Radius of the smoothing region (not including the footprint region)
                         nCores: int = 16, # Number of cores to use
                         chunk_size: int = 8000, # Number of regions to process in each chunk
                         buffer_size: int = 100, # Buffer Size for processed chunks in memory
                         async_generator: bool = True, # Whether to use asyncronous processing
-                        verbose=True):
+                        verbose=True,
+                        return_pval: bool = True,
+                        bigwigmode=False,
+                        collapse_barcodes=False,
+                        ):
     """
     The underlying function for generating footprints. This function will return a generator that yields footprints for each region.
     The calculation of footprints will be on-going even when the calculated footprints are not fetched or downstrea procssed
@@ -771,7 +821,7 @@ def footprint_generator(printer: PyPrinter,
 
         # global insertion_profile, dispModels
 
-        modes, footprintRadius, flankRadius = _unify_modes(modes, footprintRadius, flankRadius)
+        modes, footprintRadius, flankRadius, smoothRadius = _unify_modes(modes, footprintRadius, flankRadius, smoothRadius)
 
 
         if type(cell_grouping) not in [np.ndarray, list]:
@@ -785,11 +835,26 @@ def footprint_generator(printer: PyPrinter,
         dispModels = printer.dispersionModel
         insertion_profile = printer.fetch_insertion_profile()
 
-        globals()[unique_string + "insertion_profile"] = insertion_profile
-        globals()[unique_string + "_dispModels"] = dispModels
 
-        cell_grouping = cell_grouping2cell_grouping_idx(printer,
-                                                        cell_grouping)
+
+        if not bigwigmode:
+            cell_grouping = cell_grouping2cell_grouping_idx(printer,
+                                                            cell_grouping)
+
+        if collapse_barcodes:
+            new_insertion_profile = {}
+            new_cell_grouping = [[i] for i in range(len(cell_grouping))]
+            for key in tqdm(insertion_profile, desc='collapsing_barcode'):
+                xx = [csc_matrix(insertion_profile[key][barcodes].sum(axis=0)) for barcodes in cell_grouping]
+                new_insertion_profile[key] = vstack(xx)
+            insertion_profile = new_insertion_profile
+            cell_grouping = new_cell_grouping
+        if not bigwigmode:
+            globals()[unique_string + "insertion_profile"] = insertion_profile
+        else:
+            globals()[unique_string + "group_bigwig"] = printer.uns['group_bigwig']
+
+        globals()[unique_string + "_dispModels"] = dispModels
 
         Tn5Bias = getBias.getPrecomputedBias(printer.insertion_file.uns['bias_path'],
                                              regions,
@@ -802,18 +867,18 @@ def footprint_generator(printer: PyPrinter,
 
 
         Task_generator = itertools.product(range(0, len(regions), chunk_size), # region iterator,
-                                           zip(modes, footprintRadius, flankRadius), # footprint scale iterator)
+                                           zip(modes, footprintRadius, flankRadius, smoothRadius), # footprint scale iterator)
                                                 )
 
         return_order = list(range(0, len(regions), chunk_size))
         # print (return_order)
         next_return = return_order.pop(0)
 
-        bar1 = trange(len(regions) * len(modes), desc='Submitting jobs') if verbose else range(len(regions) * len(modes))
-        bar2 = trange(len(regions) * len(modes), desc='collecting multi-scale footprints') if verbose else range(len(regions) * len(modes))
+        bar1 = trange(len(regions) * len(modes), desc='Submitting jobs', disable=not verbose)
+        bar2 = trange(len(regions) * len(modes), desc='collecting multi-scale footprints', disable=not verbose)
 
         submitted_job_num = 0
-        for i, (mode, r1, r2) in Task_generator:
+        for i, (mode, r1, r2, r3) in Task_generator:
             slice_ = slice(i, i + chunk_size)
             if i not in multimode_footprints_all:
                 multimode_footprints_all[i] = [None] * len(modes)
@@ -825,9 +890,12 @@ def footprint_generator(printer: PyPrinter,
                 regions.iloc[slice_],
                 r1,
                 r2,
+                r3,
                 mode,
                 i,
-                unique_string
+                unique_string,
+                return_pval,
+                bigwigmode
             ))
             if verbose:
                 bar1.update(len(Tn5Bias[slice_]))
@@ -906,3 +974,104 @@ def _stats_inter_versus_intra(X: np.ndarray,
     return summary(inter) / (summary(intra1)+summary(intra2)+1) #/ (summary(np.linalg.norm(intra1, axis=1)) + summary(np.linalg.norm(intra2, axis=1)) + 1)
 
 
+def get_insertions(printer: PyPrinter,
+                    cell_grouping: list[str] | list[list[str]] | np.ndarray,
+                    group_names: list[str] | str,
+                    regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
+                    region_width: int | None = None,
+                    save_key: str = None,
+                    backed: bool = True,
+                    overwrite: bool = False,
+                    summarize_func=None):
+    """
+    Get the insertion profile for given regions and cell group
+    Parameters
+    ----------
+    printer
+    cell_grouping
+    group_names
+    regions
+    region_width
+    save_key
+    backed
+    overwrite
+    summarize_func
+
+    Returns
+    -------
+
+    """
+
+    with warnings.catch_warnings(), torch.no_grad():
+        warnings.simplefilter("ignore")
+
+        if type(group_names) not in [np.ndarray, list]:
+            group_names = [group_names]
+            cell_grouping = [cell_grouping]
+
+        regions = regionparser(regions, printer, region_width)
+        region_identifiers = df2regionidentifier(regions)
+        save_path = os.path.join(os.path.dirname(printer.file_path),
+                                 "%s.h5ad" % save_key) if backed else 'None'
+        if 'insertions' not in printer.uns:
+            printer.uns['insertions'] = {}
+
+        if save_key is None:
+            save_key = "Insertions"
+        if save_key in printer.uns['insertions'] or os.path.exists(save_path):
+            # Check duplicates...
+            if not overwrite:
+                print("detected %s, not allowing overwrite" % save_key)
+                return
+            else:
+                try:
+                    printer.insertionadata[save_key].close()
+                    if os.path.exists(save_path):
+                        os.remove(save_path)
+                    del printer.insertionadata[save_key]
+                except:
+                    pass
+
+        width = np.array(regions.iloc[0])
+        width = width[2] - width[1]
+
+        # results will be saved in a new key
+        print("Creating %s in printer.insertionadata" % save_key)
+
+
+        print("obs=groups, var=regions")
+        df_obs = pd.DataFrame({'name': group_names, 'id': np.arange(len(group_names))})
+        df_obs.index = group_names
+        df_var = regions
+        df_var['identifier'] = region_identifiers
+        df_var.index = region_identifiers
+        if backed:
+            adata = snap.AnnData(filename=save_path, X=csr_matrix((len(group_names),
+                                                                   len(regions))),
+                                 obs=df_obs, var=df_var)
+            adata.obs_names = [str(xx) for xx in group_names]
+            adata.var_names = region_identifiers
+
+        else:
+            adata = anndata.AnnData(X=csr_matrix((len(group_names),
+                                                  len(regions))),
+                                    obs=df_obs, var=df_var)
+
+        a = printer.uns['footprints']
+        a[save_key] = str(save_path)
+        printer.uns['footprints'] = a
+        cell_grouping = cell_grouping2cell_grouping_idx(printer,
+                                                        cell_grouping)
+        if backed:
+            adata.close()
+            adata = h5py.File(save_path, 'r+', locking=False)
+            adata_obsm = adata['obsm']
+        else:
+            adata_obsm = adata.obsm
+
+        for i, region_identifier in enumerate(tqdm(region_identifiers)):
+            atac = _get_group_atac(printer, cell_grouping, regions.iloc[i])
+        #     if summarize_func is not None:
+        #         atac = summarize_func(atac)
+        #     adata_obsm[region_identifier] = atac
+        # printer.insertionadata[save_key] = adata

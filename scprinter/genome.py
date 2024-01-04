@@ -2,10 +2,14 @@
 from __future__ import annotations
 import os.path
 from .datasets import datasets, giverightstothegroup
-from .utils import get_stats_for_genome
+from .utils import get_stats_for_genome, DNA_one_hot
 from pooch import Decompress, Untar
 from pathlib import Path
 from pyfaidx import Fasta
+import torch
+
+
+
 
 class Genome:
     def __init__(self,
@@ -105,6 +109,28 @@ class Genome:
             self.fasta = Fasta(self.fetch_fa())
 
         return self.fasta[chrom][start:end].seq
+
+    def fetch_onehot_seq(self, chrom, start, end):
+        """
+        Fetch the onehot encoded sequence from the fasta file
+
+        Parameters
+        ----------
+        chrom: str
+            The name of the chromosome
+        start: int
+            The start position of the sequence
+        end: int
+            The end position of the sequence
+
+        Returns
+        -------
+        np.array of the onehot encoded sequence
+        """
+        if not hasattr(self, 'fasta'):
+            self.fasta = Fasta(self.fetch_fa())
+
+        return DNA_one_hot(self.fasta[chrom][start:end].seq.upper())
 
     def fetch_bias(self):
         """

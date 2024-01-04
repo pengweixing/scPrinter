@@ -1,5 +1,6 @@
 from .utils import *
 import numpy as np
+import pyBigWig
 
 # get ATAC insertions for a bunch of cells and a given reigon
 def _get_region_atac(printer,
@@ -32,6 +33,20 @@ def _get_group_atac(printer,
     atac_all = _get_region_atac(printer, slice(None), region)
     a = np.array([np.asarray(atac_all[barcodes].sum(axis=0)).astype('float32')[0] for barcodes in cell_grouping_idx])
 
+    return a
+
+# get ATAC insertion for groups and a given region through bigwig
+def _get_group_atac_bw(dict1,
+                 cell_grouping, region):
+
+    v = region.values.reshape((-1))
+    chrom, start_pos, end_pos = v[0], v[1], v[2]
+    a = []
+    for group in cell_grouping:
+        with pyBigWig.open(dict1[group], 'r') as bw:
+            a.append(bw.values(chrom, start_pos, end_pos, numpy=True))
+    a = np.array(a)
+    a = np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
     return a
 
 # A wrapper function for more complicated situations

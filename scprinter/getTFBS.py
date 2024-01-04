@@ -133,7 +133,8 @@ def getRegionBindingScore(region_identifier, # an identifier for things that fin
                   # Must have $score attribute which indicates how well the motif is matched (between 0 and 1)
                   # If NULL, the region will be divided into equally sized tiles for TF binding scoring
                   tileSize=10,  # Size of tiles if sites is NULL
-                  contextRadius=100  # Local radius of model input (in bp)
+                  contextRadius=100,  # Local radius of model input (in bp),
+                  strand='*',
                   ):
 
     if sites is not None:
@@ -162,6 +163,8 @@ def getRegionBindingScore(region_identifier, # an identifier for things that fin
         skip_site_check = True
     else:
         skip_site_check = False
+    if strand != '*':
+        skip_site_check = True
 
     width = len(Tn5Bias)
     scales = BindingScoreModel['scales']
@@ -194,11 +197,15 @@ def getRegionBindingScore(region_identifier, # an identifier for things that fin
         'int')
     # Only keep sites with distance to CRE edge >= contextRadius
     siteFilter = (relativePos > contextRadius) & (relativePos <= (width - contextRadius))
+    if np.sum(siteFilter) == 0:
+        print (sites, region, relativePos, contextRadius, width- contextRadius)
+        print ("no sites in the region")
     sites = sites.iloc[siteFilter]
     relativePos = relativePos[siteFilter]
 
     # Go through each site and calculate predicted TF binding score for each pseudobulk
     score = np.array(sites['Score'])
+    score = score[None, :, None]
     start = time.time()
 
 
@@ -211,7 +218,10 @@ def getRegionBindingScore(region_identifier, # an identifier for things that fin
 
         if not skip_site_check:
             mask = np.isin(sites['Strand'], ['-', '-1', -1])
+            # print ("neg strand", np.sum(mask))
             siteFootprints[:, :, mask] = siteFootprints[:, :, mask][..., ::-1]
+        if strand == '-':
+            siteFootprints = siteFootprints[..., ::-1]
 
         stride_time = time.time() - start
         start = time.time()
@@ -220,6 +230,8 @@ def getRegionBindingScore(region_identifier, # an identifier for things that fin
         # then reshaped to (group, sites, scale * (2 * context Radius + 1))
         BindingScoreData = np.transpose(siteFootprints, axes=[0, 2, 1, 3]).reshape((siteFootprints.shape[0],
                                                                                     siteFootprints.shape[2], -1))
+        # BindingScoreData = np.concatenate([BindingScoreData,
+        #                                    score], axis=-1)
 
         transpose_time = time.time() - start
         start = time.time()

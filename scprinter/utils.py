@@ -15,7 +15,41 @@ from pyfaidx import Fasta
 import pybedtools
 from pathlib import Path
 from scipy.sparse import csr_matrix
+import scipy
 
+def DNA_one_hot(sequence,
+                alphabet='ACGT',
+                dtype='float',
+                device='cpu'):
+    """Convert a DNA sequence string into a one-hot encoding tensor.
+    Parameters
+    ----------
+    sequence : str
+        DNA sequence string.
+    dtype : str
+        Data type of the returned tensor.
+    device : str
+        Device of the returned tensor.
+    verbose : bool
+        If True, print progress.
+
+    Returns
+    -------
+    torch.Tensor
+        One-hot encoding tensor.
+    """
+    lookup = {char: i for i, char in enumerate(alphabet)}
+    lookup['N'] = -1
+    embed = torch.zeros((len(alphabet)+1, len(sequence)),dtype=torch.int8, device=device)
+    embed[[lookup[char] for char in sequence], torch.arange(len(sequence))] = 1
+
+    return embed[:-1, :]
+
+def zscore2pval(footprint):
+    pval = scipy.stats.norm.cdf(footprint, 0, 1)
+    pval = -np.log10(pval)
+    pval[np.isnan(pval)] = 0
+    return pval
 
 def get_stats_for_genome(fasta_file):
     """
@@ -72,7 +106,8 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
     """
     if type(regions) is list:
         if ":" in regions[0] and "-" in regions[0]:
-            regions = pd.DataFrame([re.split(':|-', xx) for xx in regions], columns=['Chromosome', 'Start', 'End'])
+            regions = pd.DataFrame([re.split(':|-', xx) for xx in regions])
+            regions.columns = ['Chromosome', 'Start', 'End'] + list(regions.columns)[3:]
             regions['Start'] = regions['Start'].astype('int')
             regions['End'] = regions['End'].astype('int')
         elif "Gene:" in regions[0]:
@@ -89,7 +124,10 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
         regions = pd.DataFrame(regions.values[None])
     elif type(regions) is str:
         if ":" in regions and "-" in regions:
-            regions = pd.DataFrame([re.split(':|-', regions)], columns=['Chromosome', 'Start', 'End'])
+            # regions = pd.DataFrame([re.split(':|-', regions)], columns=['Chromosome', 'Start', 'End'])
+            regions = pd.DataFrame([re.split(':|-', regions)])
+            regions.columns = ['Chromosome', 'Start', 'End'] + list(regions.columns)[3:]
+
             regions['Start'] = regions['Start'].astype('int')
             regions['End'] = regions['End'].astype('int')
             # regions_pr = dftopyranges(regions)

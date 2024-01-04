@@ -25,6 +25,8 @@ class PyPrinter():
         direct assignment of insertion_profile
     genome: scp.genome
         a scp.genome object
+    attach: bool
+        whether to attach the footprintsadata / bindingscoreadata to the printer object
 
     """
     def __init__(self,
@@ -32,10 +34,12 @@ class PyPrinter():
                  adata_path: str | Path | None = None,
                  insertion_profile: dict | None = None, # direct assignment of insertion_profile
                  genome: genome.Genome | None = None, # a scp.genome object
+                 attach: bool = True
                  ) -> None:
 
         self.bindingscoreadata = {}
         self.footprintsadata = {}
+        self.insertionadata = {}
         self.gene_region_width=1000
         self.genome=genome
         if adata is not None:
@@ -51,29 +55,32 @@ class PyPrinter():
             self.uns = self.insertion_file.uns
             self.unique_string = self.insertion_file.uns['unique_string']
             # Start to read in the binding score data and footprint data
-            for result_key, save in zip(['binding score', 'footprints'],
-                                         [self.bindingscoreadata, self.footprintsadata]):
-                remove_key = []
-                for save_key in adata.uns[result_key]:
-                    p = adata.uns[result_key][save_key]
-                    success = False
-                    if p != "None" and len(p) > 0 and os.path.exists(p):
-                        try:
-                            # Only allow read when load.
-                            print("loading", save_key, p)
-                            save[save_key] = snap.read(p, backed='r')
-                            success = True
-                        except:
-                            pass
-                    if not success:
-                        remove_key.append(save_key)
+            if attach:
+                for result_key, save in zip(['binding score', 'footprints', 'insertion'],
+                                             [self.bindingscoreadata, self.footprintsadata, self.insertionadata]):
+                    remove_key = []
+                    if result_key not in adata.uns:
+                        continue
+                    for save_key in adata.uns[result_key]:
+                        p = adata.uns[result_key][save_key]
+                        success = False
+                        if p != "None" and len(p) > 0 and os.path.exists(p):
+                            try:
+                                # Only allow read when load.
+                                print("loading", save_key, p)
+                                save[save_key] = snap.read(p, backed='r')
+                                success = True
+                            except:
+                                pass
+                        if not success:
+                            remove_key.append(save_key)
 
 
-                # Update uns
-                a = adata.uns[result_key]
-                for key in remove_key:
-                    del a[key]
-                adata.uns[result_key] = a
+                    # Update uns
+                    a = adata.uns[result_key]
+                    for key in remove_key:
+                        del a[key]
+                    adata.uns[result_key] = a
 
         # Get genome related info
         if genome is not None:
@@ -201,6 +208,12 @@ class PyPrinter():
                 data.close()
             except:
                 pass
+        for data in self.insertionadata.values():
+            try:
+                data.close()
+            except:
+                pass
+
 
     def __repr__(self):
         print("head project")
@@ -232,7 +245,19 @@ class PyPrinter():
                     print("\n".join(response))
                 else:
                     print (response)
-
+        if len(self.insertionadata) > 0:
+            print ("detected %d insertionadata" % len(self.insertionadata))
+            for key in self.insertionadata:
+                print ("name", key)
+                response = str(self.insertionadata[key])
+                response = response.split("\n")
+                if len(response) > 1:
+                    a = response[-1].strip().split(": ")[1].split(", ")
+                    new_final = "    obsm: %d regions results in total: e.g. %s" % (len(a), a[0])
+                    response[-1] = new_final
+                    print("\n".join(response))
+                else:
+                    print (response)
         return ""
 
 
@@ -282,7 +307,8 @@ class PyPrinter():
 
 
 def load_printer(path: str | Path,
-                 genome: genome.Genome):
+                 genome: genome.Genome,
+                 attach: bool = True):
     """
     Load a printer from adata file
 
@@ -292,6 +318,8 @@ def load_printer(path: str | Path,
         path to the scprinter main h5ad file
     genome: Genome
         genome object. Must be the same as the one used to process the data
+    attach: bool
+        whether to attach the footprintsadata / bindingscoreadata to the printer object
     """
     data = snap.read(path)
     assert data.uns['genome'] == f'{genome=}'.split('=')[0], "Process data with %s, but now loading with %s" %(data.uns['genome'],
@@ -300,7 +328,8 @@ def load_printer(path: str | Path,
         adata = data,
         adata_path = path,
         insertion_profile=None,
-        genome=genome
+        genome=genome,
+        attach=attach
     )
     # register close automatically.
     atexit.register(printer.close)

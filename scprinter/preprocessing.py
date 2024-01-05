@@ -5,7 +5,7 @@ import os.path
 from . import genome
 from .utils import *
 from .io import load_printer, PyPrinter
-from scprinter.backup.shift_detection import detect_shift
+from scprinter.shift_detection import detect_shift
 import pyBigWig
 from tqdm.auto import tqdm, trange
 from scipy.sparse import coo_matrix
@@ -312,6 +312,37 @@ def seq_model_config(printer: PyPrinter,
       "peaks": peak_file,
       "signals": [printer.insertion_file.uns['group_bigwig'][name] for name in group_names],
       "bias": printer.insertion_file.uns['bias_bw'],
+      "split":{
+        "test": [
+            "chr1",
+            "chr3",
+            "chr6"
+        ],
+        "valid": [
+            "chr8",
+            "chr20"
+        ],
+        "train": [
+            "chr2",
+            "chr4",
+            "chr5",
+            "chr7",
+            "chr9",
+            "chr10",
+            "chr11",
+            "chr12",
+            "chr13",
+            "chr14",
+            "chr15",
+            "chr16",
+            "chr17",
+            "chr18",
+            "chr19",
+            "chr21",
+            "chr22",
+            "chrX",
+            "chrY"
+        ]},
       "max_jitter": 128,
       "reverse_compliment": True,
       "n_filters": 768,

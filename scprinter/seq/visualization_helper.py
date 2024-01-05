@@ -5,7 +5,7 @@ from ..utils import regionparser
 
 
 
-def aggregated_footprints(model,
+def predict_footprints(model,
                           printer,
                           regions,
                           modes=np.arange(2,101,1),

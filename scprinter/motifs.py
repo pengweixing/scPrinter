@@ -227,7 +227,7 @@ class Motifs:
         self.pool = ProcessPoolExecutor(max_workers=nCores)
         with open(ref_path_motif, "r") as infile:
             self.all_motifs = list(motifs.parse(infile, "jaspar"))
-        self.all_motifs = np.array(self.all_motifs,dtype=object)
+        # self.all_motifs = np.array(self.all_motifs,dtype=object)
         self.names = [set(motif.name.split(",")) if split_tf else {motif.name} for motif in self.all_motifs]
         self.tfs = set().union(*self.names)
         # for large sequence header, only keep the text before the first space
@@ -282,7 +282,8 @@ class Motifs:
         self.select = select
 
         if pseudocount != self.pseudocount or pvalue != self.pvalue:
-            motif = self.all_motifs[select]
+            # motif = self.all_motifs[select]
+            motif = [motif for motif, keep in zip(self.all_motifs, select) if keep]
             # Each TF gets a matrix for the + and for the - strand, and a corresponding threshold
             matrices_p, threshold_p, matrices_m, threshold_m = self._prepare_moods_settings(motif, self.bg, pseudocount, pvalue)
         else:
@@ -309,7 +310,8 @@ class Motifs:
                   strand: bool = True,
                   ):
         scanner = self.scanner
-        motif = self.all_motifs[self.select]
+        # motif = self.all_motifs[self.select]
+        motif = [motif for motif, keep in zip(self.all_motifs, self.select) if keep]
         motifs_length = [m.length for m in motif]
         motifs_name = [m.name for m in motif]
         seq = self.genome_seq[chr][start:end].seq
@@ -356,7 +358,8 @@ class Motifs:
 
         scanner = self.scanner
         maps = [[] for i in range(len(peaks_iter))]
-        motif = self.all_motifs[self.select]
+        # motif = self.all_motifs[self.select]
+        motif = [motif for motif, keep in zip(self.all_motifs, self.select) if keep]
         motifs_length = [m.length for m in motif]
         motifs_name = [m.name for m in motif]
 

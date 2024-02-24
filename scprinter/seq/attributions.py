@@ -161,12 +161,13 @@ def calculate_attributions(model, X,
                            n_shuffles=20,
                            verbose=False,
                            n_steps=10,
-                           references=None,):
+                           references=None,
+                           amp=True):
 
     batch_size = 32 if method == 'ism' else 1
     attributions = []
     dev = next(model.parameters()).device
-    for i in trange(0, len(X), batch_size, disable=not verbose):
+    for i in trange(0, len(X), batch_size, disable=not verbose, dynamic_ncols=True):
         _X = X[i:i+batch_size].float()
         if method != 'ism':
             if references is None:
@@ -202,9 +203,11 @@ def calculate_attributions(model, X,
 
         elif 'shap' in method:
             dl = PyTorchDeep(model, _references)
+            dl.amp = amp
             attr, deltas = dl.shap_values(_X, check_additivity=False,
                                         custom_attribution_func=hypothetical_attributions if "hypo" in method else None)
             if "hypo" not in method:
+                # print (deltas)
                 if torch.max(torch.abs(deltas[0])) > 1e-2:
                     print (deltas)
         elif 'IxG' in method:
@@ -290,8 +293,10 @@ def attribution_to_bigwig(attributions,
     cluster_stats = regions.drop_duplicates('cluster')
     cluster_stats = cluster_stats.sort_values(by=['chrom', 'start', 'end'])
     order_of_cluster = np.array(cluster_stats['cluster'])
-
-    clusters = {cluster: group for cluster, group in regions.groupby('cluster')}
+    print (regions)
+    aa = regions.groupby('cluster')
+    print (aa)
+    # clusters = {cluster: group for cluster, group in tqdm(aa)}
 
     header = []
     chrom_order = cluster_stats['chrom'].unique()
@@ -299,19 +304,38 @@ def attribution_to_bigwig(attributions,
         header.append((chrom, int(chrom_size[chrom])))
     bw.addHeader(header, maxZooms=10)
 
-    for cluster in tqdm(order_of_cluster):
-        region_temp = clusters[cluster]
-        chroms, starts, ends = region_temp['chrom'], region_temp['start'], region_temp['end']
+    stuff_to_add= {'chroms':None,
+                   'points': [],
+                   'values': []}
+
+
+    for cluster in tqdm(order_of_cluster, dynamic_ncols=True):
+        # region_temp = clusters[cluster]
+        region_temp = aa.get_group(cluster)
+        chroms, starts, ends = np.array(region_temp['chrom']), region_temp['start'], region_temp['end']
         mask = np.array(region_temp['fake_id'])
         attributions_chrom = attributions[mask]
 
+        if str(chroms[0]) != stuff_to_add['chroms'] and stuff_to_add['chroms'] is not None:
+            print("writing")
+            chrom = stuff_to_add['chroms']
+            points = np.concatenate(stuff_to_add['points'])
+            values = np.concatenate(stuff_to_add['values'])
+
+            bw.addEntries(chrom, points, values=values, span=res)
+            stuff_to_add = {'chroms': None,
+                            'points': [],
+                            'values': []}
 
         if len(mask) == 1:
             chrom = np.array(chroms)[0]
             points = np.arange(attributions_chrom[0].shape[-1]) * res + np.array(starts)[0]
-            bw.addEntries(str(chrom),
-                          points,
-                          values=attributions_chrom[0].astype('float'), span=res,)
+            stuff_to_add['chroms']  = str(chrom)
+            stuff_to_add['points'].append(points)
+            stuff_to_add['values'].append(attributions_chrom[0].astype('float'))
+            # bw.addEntries(str(chrom),
+            #               points,
+            #               values=attributions_chrom[0].astype('float'), span=res,)
             continue
 
         start_point = np.min(starts)
@@ -337,9 +361,20 @@ def attribution_to_bigwig(attributions,
         indx = ~np.isnan(importance_track)
         chrom = np.array(chroms)[0]
         points = np.array(np.where(indx)[0]) * res + start_point
-        bw.addEntries(str(chrom),
-                      points,
-                      values=importance_track[indx], span=res, )
+        # bw.addEntries(str(chrom),
+        #               points,
+        #               values=importance_track[indx], span=res, )
+        stuff_to_add['chroms'] = str(chrom)
+        stuff_to_add['points'].append(points)
+        stuff_to_add['values'].append(importance_track[indx])
+
+    print("writing")
+    chrom = stuff_to_add['chroms']
+    points = np.concatenate(stuff_to_add['points'])
+    values = np.concatenate(stuff_to_add['values'])
+
+    bw.addEntries(chrom, points, values=values, span=res)
+
     bw.close()
 
 

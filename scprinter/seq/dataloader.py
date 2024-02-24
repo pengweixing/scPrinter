@@ -85,7 +85,8 @@ class ChromBPDataset(torch.utils.data.Dataset):
                                  chrom, summit in
                                  zip(tqdm(self.summits.iloc[:, 0], desc='fetching coverage'),
                                      self.summits.iloc[:, 1])])
-
+            print (coverage.shape)
+            print ("coverage min max", coverage.min(axis=-1).min(), coverage.max(axis=-1).max())
             summits_valid = (coverage.min(axis=-1) > self.min_counts) & (coverage.max(axis=-1) < self.max_counts)
             print("valid summits after min/max count filter", np.sum(summits_valid))
             self.summits = self.summits.loc[summits_valid]
@@ -134,7 +135,7 @@ class ChromBPDataset(torch.utils.data.Dataset):
         self.cached = True
         self.cache_seqs = []
         self.cache_signals = []
-        for chrom, summit in tqdm(self.summits, desc='Caching sequences'):
+        for chrom, summit in tqdm(self.summits[:, :2], desc='Caching sequences'):
             DNA, signal = self.fetch_loci(chrom, summit)
             self.cache_seqs.append(DNA)
             self.cache_signals.append(signal)
@@ -321,6 +322,37 @@ class ChromBPDataset(torch.utils.data.Dataset):
         signal = torch.tensor(signal, dtype=torch.float32, device=device)
         return DNA, signal
 
+def collate_fn_singlecell(batch):
+    """A collate function for the single cell data.
+    Parameters
+    ----------
+    batch: list
+        A list of tuples of two torch.Tensor objects: DNA sequence and signal track.
+
+    Returns
+    -------
+    tuple
+        A tuple of two torch.Tensor objects: DNA sequence and signal track.
+    """
+
+    X, y, cell, peak, pos_mask = list(zip(*batch))
+    X = torch.concat(X, dim=0)
+    y = torch.concat(y, dim=0)
+    cell = torch.concat(cell, dim=0)[:, None]
+    peak = torch.concat(peak, dim=0)[:, None]
+    pos_mask = torch.concat(pos_mask, dim=0)
+    idx = np.arange(len(y))
+    pos = idx[pos_mask]
+    neg = idx[~pos_mask]
+    ratio = 0.1
+    sampled_neg = np.random.permutation(neg)[:int(len(pos) * ratio)]
+    idx = torch.as_tensor(np.random.permutation(np.concatenate([pos, sampled_neg])))
+    y = y[idx]
+    X = X[idx]
+    cell = cell[idx]
+    peak = peak[idx]
+    return X, y, cell, peak
+
 
 class ChromBPDataLoader(torch.utils.data.DataLoader):
     def __init__(self,
@@ -329,8 +361,10 @@ class ChromBPDataLoader(torch.utils.data.DataLoader):
                  num_workers=1,
                  pin_memory=True,
                  shuffle=True,
+                 collate_fn=None,
                  **kwargs):
         self.data_collection = None
+        self.batch_size = batch_size
         if dataset is None:
             self.dataset = ChromBPDataset(**kwargs)
         elif type(dataset) is list:
@@ -347,7 +381,9 @@ class ChromBPDataLoader(torch.utils.data.DataLoader):
                          batch_size=batch_size,
                          num_workers=num_workers,
                          pin_memory=pin_memory,
-                         shuffle=shuffle)
+                         shuffle=shuffle,
+                         worker_init_fn = lambda id: np.random.seed(id),
+                         collate_fn=collate_fn)
 
     def resample(self):
         if self.data_collection is not None:
@@ -358,7 +394,317 @@ class ChromBPDataLoader(torch.utils.data.DataLoader):
                                      batch_size=self.batch_size,
                                      num_workers=self.num_workers,
                                      pin_memory=self.pin_memory,
-                                     shuffle=self.shuffle)
+                                     shuffle=self.shuffle,)
         else:
             return self
 
+
+
+hg38_splits = [None] * 5
+hg38_splits[0] = {
+        "test": [
+            "chr1",
+            "chr3",
+            "chr6"
+        ],
+        "valid": [
+            "chr8",
+            "chr20"
+        ],
+        "train": [
+            "chr2",
+            "chr4",
+            "chr5",
+            "chr7",
+            "chr9",
+            "chr10",
+            "chr11",
+            "chr12",
+            "chr13",
+            "chr14",
+            "chr15",
+            "chr16",
+            "chr17",
+            "chr18",
+            "chr19",
+            "chr21",
+            "chr22",
+            "chrX",
+            "chrY"
+        ]
+      }
+hg38_splits[1] = {
+    "test": [
+        "chr2",
+        "chr8",
+        "chr9",
+        "chr16"
+    ],
+    "valid": [
+        "chr12",
+        "chr17"
+    ],
+    "train": [
+        "chr1",
+        "chr3",
+        "chr4",
+        "chr5",
+        "chr6",
+        "chr7",
+        "chr10",
+        "chr11",
+        "chr13",
+        "chr14",
+        "chr15",
+        "chr18",
+        "chr19",
+        "chr20",
+        "chr21",
+        "chr22",
+        "chrX",
+        "chrY"
+    ]
+  }
+hg38_splits[2] = {
+    "test": [
+        "chr4",
+        "chr11",
+        "chr12",
+        "chr15",
+        "chrY"
+    ],
+    "valid": [
+        "chr22",
+        "chr7"
+    ],
+    "train": [
+        "chr1",
+        "chr2",
+        "chr3",
+        "chr5",
+        "chr6",
+        "chr8",
+        "chr9",
+        "chr10",
+        "chr13",
+        "chr14",
+        "chr16",
+        "chr17",
+        "chr18",
+        "chr19",
+        "chr20",
+        "chr21",
+        "chrX"
+    ]
+  }
+hg38_splits[3] = {
+    "test": [
+        "chr5",
+        "chr10",
+        "chr14",
+        "chr18",
+        "chr20",
+        "chr22"
+    ],
+    "valid": [
+        "chr6",
+        "chr21"
+    ],
+    "train": [
+        "chr1",
+        "chr2",
+        "chr3",
+        "chr4",
+        "chr7",
+        "chr8",
+        "chr9",
+        "chr11",
+        "chr12",
+        "chr13",
+        "chr15",
+        "chr16",
+        "chr17",
+        "chr19",
+        "chrX",
+        "chrY"
+    ]
+  }
+hg38_splits[4] = {
+    "test": [
+        "chr7",
+        "chr13",
+        "chr17",
+        "chr19",
+        "chr21",
+        "chrX"
+    ],
+    "valid": [
+        "chr10",
+        "chr18"
+    ],
+    "train": [
+        "chr1",
+        "chr2",
+        "chr3",
+        "chr4",
+        "chr5",
+        "chr6",
+        "chr8",
+        "chr9",
+        "chr11",
+        "chr12",
+        "chr14",
+        "chr15",
+        "chr16",
+        "chr20",
+        "chr22",
+        "chrY"
+    ]
+  }
+
+
+mm10_splits = [None] * 5
+mm10_splits[0] = {
+    "test": [
+        "chr1",
+        "chr6",
+        "chr12",
+        "chr13",
+        "chr16"
+    ],
+    "valid": [
+        "chr8",
+        "chr11",
+        "chr18",
+        "chr19",
+        "chrX"
+    ],
+    "train": [
+        "chr2",
+        "chr3",
+        "chr4",
+        "chr5",
+        "chr7",
+        "chr9",
+        "chr10",
+        "chr14",
+        "chr15",
+        "chr17"
+    ]
+}
+mm10_splits[1] = {
+    "test": [
+        "chr2",
+        "chr7",
+        "chr10",
+        "chr14",
+        "chr17"
+    ],
+    "valid": [
+        "chr5",
+        "chr9",
+        "chr13",
+        "chr15",
+        "chrY"
+    ],
+    "train": [
+        "chr1",
+        "chr3",
+        "chr4",
+        "chr6",
+        "chr8",
+        "chr11",
+        "chr12",
+        "chr16",
+        "chr18",
+        "chr19",
+        "chrX"
+    ]
+}
+mm10_splits[2] = {
+    "test": [
+        "chr3",
+        "chr8",
+        "chr13",
+        "chr15",
+        "chr17"
+    ],
+    "valid": [
+        "chr2",
+        "chr9",
+        "chr11",
+        "chr12",
+        "chrY"
+    ],
+    "train": [
+        "chr1",
+        "chr4",
+        "chr5",
+        "chr6",
+        "chr7",
+        "chr10",
+        "chr14",
+        "chr16",
+        "chr18",
+        "chr19",
+        "chrX"
+    ]
+}
+mm10_splits[3] = {
+    "test": [
+        "chr4",
+        "chr9",
+        "chr11",
+        "chr14",
+        "chr19"
+    ],
+    "valid": [
+        "chr1",
+        "chr7",
+        "chr12",
+        "chr13",
+        "chrY"
+    ],
+    "train": [
+        "chr2",
+        "chr3",
+        "chr5",
+        "chr6",
+        "chr8",
+        "chr10",
+        "chr15",
+        "chr16",
+        "chr17",
+        "chr18",
+        "chrX"
+    ]
+}
+mm10_splits[4] = {
+    "test": [
+        "chr5",
+        "chr10",
+        "chr12",
+        "chr16",
+        "chrY"
+    ],
+    "valid": [
+        "chr3",
+        "chr7",
+        "chr14",
+        "chr15",
+        "chr18"
+    ],
+    "train": [
+        "chr1",
+        "chr2",
+        "chr4",
+        "chr6",
+        "chr8",
+        "chr9",
+        "chr11",
+        "chr13",
+        "chr17",
+        "chr19",
+        "chrX"
+    ]
+}

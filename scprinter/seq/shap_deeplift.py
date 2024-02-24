@@ -7,6 +7,7 @@ from shap.explainers._explainer import Explainer
 import torch
 import torch.nn.functional as F
 from functools import partial
+from torch.cuda.amp import GradScaler
 def _check_additivity(explainer, model_output_values, output_phis):
     TOLERANCE = 1e-2
 
@@ -83,6 +84,7 @@ class PyTorchDeep(Explainer):
                 self.multi_output = True
                 self.num_outputs = outputs.shape[1]
             self.expected_value = outputs.mean(0).cpu()
+        self.amp = True
 
     def add_target_handle(self, layer):
         input_handle = layer.register_forward_hook(get_target_input)
@@ -107,6 +109,7 @@ class PyTorchDeep(Explainer):
                 handles_list.extend(self.add_handles(child, forward_handle, backward_handle))
         else:  # leaves
             # print("no children", model)
+            # print (model, backward_handle)
             handles_list.append(model.register_forward_hook(forward_handle))
             handles_list.append(model.register_full_backward_hook(backward_handle))
         return handles_list
@@ -132,16 +135,28 @@ class PyTorchDeep(Explainer):
     def gradient(self, idx, inputs, return_output=False):
         self.model.zero_grad()
         X = [x.requires_grad_() for x in inputs]
-        outputs = self.model(*X)
+
+        scaler = GradScaler(enabled=self.amp)
+
+
+        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.amp):
+            outputs = self.model(*X)
+
         selected = [val for val in outputs[:, idx]]
 
         grads = []
         if self.interim:
             interim_inputs = self.layer.target_input
             for idx, input in enumerate(interim_inputs):
-                grad = torch.autograd.grad(selected, input,
+
+
+
+                scaled_grad = torch.autograd.grad(selected, input,
                                            retain_graph=True if idx + 1 < len(interim_inputs) else None,
                                            allow_unused=True)[0]
+                inv_scale = 1. / scaler.get_scale()
+                grad = scaled_grad * inv_scale
+
                 if grad is not None:
                     grad = grad.cpu()
                 else:
@@ -151,9 +166,19 @@ class PyTorchDeep(Explainer):
             return grads, [i.detach().cpu() for i in interim_inputs]
         else:
             for idx, x in enumerate(X):
-                grad = torch.autograd.grad(selected, x,
+                # grad = torch.autograd.grad(selected, x,
+                #                            retain_graph=True if idx + 1 < len(X) else None,
+                #                            allow_unused=True)[0]
+                scaled_grad = torch.autograd.grad(outputs=selected,
+                                                  inputs=x,
+                                           # create_graph=True,
                                            retain_graph=True if idx + 1 < len(X) else None,
-                                           allow_unused=True)[0]
+                                           allow_unused=True
+                                                  )[0]
+                # inv_scale = 1. / scaler.get_scale()
+                grad = scaled_grad #* inv_scale
+                # scaler.update()
+
                 if grad is not None:
                     grad = grad.cpu()
                 else:
@@ -256,7 +281,7 @@ class PyTorchDeep(Explainer):
                                                                  )
                             phis[l][j] = attr.mean(dim=0).cpu().detach()
                         else:
-                            phis[l][j] = (sample_phis[l][:self.data[l].shape[0]].to(self.device) * (
+                            phis[l][j] = (sample_phis[l][self.data[l].shape[0]:].to(self.device) * (
                             X[l][j: j + 1] - self.data[l])).cpu().detach().mean(0)
             output_phis.append(phis[0] if not self.multi_input else phis)
             output_deltas.append(deltas[0] if not self.multi_input else deltas)
@@ -419,7 +444,7 @@ def nonlinear_1d(module, grad_input, grad_output):
     # just taking the gradient in those cases
     grads = [None for _ in grad_input]
     grads[0] = torch.where(torch.abs(delta_in.repeat(dup0)) < 1e-6, grad_input[0],
-                           grad_output[0] * (delta_out / delta_in).repeat(dup0))
+                           grad_output[0] * (delta_out / delta_in).repeat(dup0)).type(grad_input[0].dtype)
 
     return tuple(grads)
 
@@ -553,6 +578,7 @@ op_handler['Softmax_one'] = nonlinear_1d
 op_handler['SigmoidScale'] = nonlinear_1d
 op_handler['InverseSigmoid'] = nonlinear_1d
 op_handler['_ProfileLogitScaling'] = nonlinear_1d
+op_handler['FootprintScaling'] = nonlinear_1d
 op_handler['RelMultiHeadAttention_custom'] = passthrough
 op_handler['ElementWiseMultiply']  = nonlinear_2d_elementwise_mul
 op_handler['MatrixMultiply'] = linear_1d

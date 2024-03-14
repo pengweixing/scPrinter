@@ -10,6 +10,8 @@ from . import datasets
 from . import fetch
 from . import utils
 from . import peak
+from . import seq
+from . import chromvar
 # from . import HMM
 
 import sys

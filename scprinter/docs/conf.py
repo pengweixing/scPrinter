@@ -123,11 +123,11 @@ else:
     switcher_version = f"{version}"
 
 html_theme_options = {
-    "github_url": "https://github.com/broadinstitute/PRINT",
+    "github_url": "https://github.com/ruochiz/scPrinter",
     "navbar_end": ["version-switcher", "theme-switcher", "navbar-icon-links"],
     "switcher": {
         "version_match": switcher_version,
-        "json_url": "https://raw.githubusercontent.com/broadinstitute/PRINT/main/docs/_static/versions.json",
+        "json_url": "https://github.com/ruochiz/scPrinter/docs/_static/versions.json",
     },
 }
 

@@ -108,7 +108,7 @@ class scChromBPDataset(torch.utils.data.Dataset):
             regions[:, 1] = regions[:, 1].astype(int)
             regions[:, 2] = regions[:, 2].astype(int)
             if coverages is None:
-                coverages = process_map(func, regions, max_workers=mpl.cpu_count() * 2,
+                coverages = process_map(func, regions, max_workers=min(mpl.cpu_count(), 128),
                                         chunksize=100,
                                         desc='fetching coverages')
                 self.coverages = np.array(coverages).reshape((-1))

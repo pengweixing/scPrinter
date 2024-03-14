@@ -51,6 +51,28 @@ def zscore2pval(footprint):
     pval[np.isnan(pval)] = 0
     return pval
 
+def zscore2pval_torch(footprint):
+    # pval = torch.distributions.Normal(0, 1).cdf(footprint)
+    # pval = -torch.log10(pval)
+    # pval[torch.isnan(pval)] = 0
+    # # pval = pval.astype(footprint.dtype)
+    # return pval
+    # Calculate the CDF of the normal distribution for the given footprint
+    pval = torch.distributions.Normal(0, 1).cdf(footprint)
+
+    # Clamp pval to prevent log(0) which leads to -inf. Use a very small value as the lower bound.
+    eps = torch.finfo(pval.dtype).eps
+    pval_clamped = torch.clamp(pval, min=eps)
+
+    # Compute the negative log10, using the clamped values to avoid -inf
+    pval_log = -torch.log10(pval_clamped)
+
+    # Optionally, to handle values very close to 1 (which would result in a negative pval_log),
+    # you can clamp the output to be non-negative. This is a design choice depending on your requirements.
+    pval_log = torch.clamp(pval_log, min=0, max=10)
+
+    return pval_log
+
 def get_stats_for_genome(fasta_file):
     """
     This is a function that reads a fasta file and return a dictionary of chromosome names and their lengths

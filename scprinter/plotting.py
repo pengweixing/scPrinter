@@ -80,6 +80,7 @@ def plot_group_atac(printer: PyPrinter,
                     ax: list[matplotlib.axes.Axes] | matplotlib.axes.Axes | None = None,
                     color: list[str] = None,
                     smooth: bool = False,
+                    legend: bool = True,
                     **kwargs):
 
     '''
@@ -156,7 +157,8 @@ def plot_group_atac(printer: PyPrinter,
 
         labels = group_names
         handles = [plt.Rectangle((0, 0), 1, 1, color=color[i]) for i in range(len(labels))]
-        plt.legend(handles, labels)
+        if legend:
+            plt.legend(handles, labels)
         # ax.get_xaxis().set_visible(False)
         ax.set_xticks([0, int(0.5 * atacs.shape[-1]), atacs.shape[-1]])
         ax.set_xlim(0, atacs.shape[-1])
@@ -702,14 +704,23 @@ def plot_motif_match_static(motif: motifs.Motifs,
         color = default_20
     elif len(tfs) <= 28:
         color = default_28
-    else:
+    elif len(tfs) <= 102:
         color = default_102
-    if color_dict is None:
+    else:
+        # dynamic colors
+        color = None
+    if color_dict is None and color is not None:
         color_dict = {tf: color[i] for i, tf in enumerate(tfs)}
     region = regionparser(region, printer)
     chrom, s, e = str(region['Chromosome'][0]), region['Start'][0], region['End'][0]
     motif_matchs = motif.scan_motif([[chrom, s, e, "+"]],
                                     clean=clean, strand=strand)
+    if color_dict is None:
+        color = list(default_102) * 5
+        tfs = set([match[4] for match in motif_matchs])
+        # print(len(tfs))
+        color_dict = {tf: color[i] for i, tf in enumerate(tfs)}
+
     # [bed_coord['chr'], bed_coord['start'],
     #   bed_coord['end'], bed_coord['index'],
     #   name, score,
@@ -724,4 +735,44 @@ def plot_motif_match_static(motif: motifs.Motifs,
     _ = record.plot(ax=ax)
 
 
+def plot_annotations(ax: matplotlib.axes.Axes,
+                     start,
+                     end,
+                     label=None,
+                     strand=None,
+                     color_dict=None,):
+    """
+    a general function to plot genome annotations.
+
+    Parameters
+    ----------
+    ax
+    start
+    end
+    label
+    strand
+    color_dict
+
+    Returns
+    -------
+
+    """
+    uniq_label = np.unique(label)
+    if len(uniq_label) <= 20:
+        color = default_20
+    elif len(uniq_label) <= 28:
+        color = default_28
+    else:
+        color = default_102
+
+    if color_dict is None and color is not None:
+        color_dict = {tf: color[i] for i, tf in enumerate(uniq_label)}
+
+    # features = [GraphicFeature(start=match[7],
+    #                            end=match[8],
+    #                            strand=match[6],
+    #                            color=color_dict[match[4]],
+    #                            label=match[4]) for ]
+    # record = GraphicRecord(sequence_length=e - s, features=features)
+    # _ = record.plot(ax=ax)
 

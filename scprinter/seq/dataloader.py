@@ -335,7 +335,7 @@ def collate_fn_singlecell(batch):
         A tuple of two torch.Tensor objects: DNA sequence and signal track.
     """
 
-    X, y, cell, peak, pos_mask = list(zip(*batch))
+    X, y, cell, peak, pos_mask, coverage = list(zip(*batch))
     X = torch.concat(X, dim=0)
     y = torch.concat(y, dim=0)
     cell = torch.concat(cell, dim=0)[:, None]
@@ -351,7 +351,7 @@ def collate_fn_singlecell(batch):
     X = X[idx]
     cell = cell[idx]
     peak = peak[idx]
-    return X, y, cell, peak
+    return X, y, cell, peak, coverage
 
 
 class ChromBPDataLoader(torch.utils.data.DataLoader):

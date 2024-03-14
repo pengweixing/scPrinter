@@ -17,6 +17,7 @@ class Genome:
                  gff_file: str | Path = '',
                  fa_file: str | Path = '',
                  bias_file: str | Path = '',
+                 blacklist_file: str | Path | None = None,
                  bg: tuple | None = None):
         """
         Genome class
@@ -61,6 +62,15 @@ class Genome:
         self.gff_file = gff_file
         self.fa_file = fa_file
         self.bias_file = bias_file
+        self.blacklist_file = blacklist_file
+
+    def fetch_blacklist(self):
+        if self.blacklist_file is None:
+            raise ValueError("No blacklist file provided")
+        if not os.path.exists(self.fa_file):
+            return str(datasets().fetch(self.blacklist_file, processor = giverightstothegroup, progressbar=True,))
+        else:
+            return self.blacklist_file
 
     def fetch_gff(self):
         """
@@ -141,7 +151,10 @@ class Genome:
         str of the path to the local bias file
         """
         if not os.path.exists(self.bias_file):
-            return str(datasets().fetch(self.bias_file, processor = giverightstothegroup, progressbar=True,)[0])
+            file = datasets().fetch(self.bias_file, processor = giverightstothegroup, progressbar=True,)
+            for f in file:
+                if ".h5" in f:
+                    return str(f)
         return self.bias_file
 
 
@@ -175,6 +188,7 @@ GRCh38 = Genome(
     "gencode_v41_GRCh38.gff3.gz",
     "gencode_v41_GRCh38.fa.gz",
     "hg38Tn5Bias.tar.gz",
+    "hg38-blacklist.v2.bed.gz",
     (0.29518279760588795, 0.20390602956403897, 0.20478356895235347, 0.2961276038777196)
 )
 
@@ -208,6 +222,7 @@ GRCm38 = Genome(
     "gencode_vM25_GRCm38.gff3.gz",
     "gencode_vM25_GRCm38.fa.gz",
     "mm10Tn5Bias.tar.gz",
+    "mm10-blacklist.v2.bed.gz",
     (0.29149763779592625,
      0.2083275235867118,
      0.20834346947899296,

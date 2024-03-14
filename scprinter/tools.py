@@ -1071,7 +1071,7 @@ def get_insertions(printer: PyPrinter,
 
         for i, region_identifier in enumerate(tqdm(region_identifiers)):
             atac = _get_group_atac(printer, cell_grouping, regions.iloc[i])
-        #     if summarize_func is not None:
-        #         atac = summarize_func(atac)
-        #     adata_obsm[region_identifier] = atac
-        # printer.insertionadata[save_key] = adata
+            if summarize_func is not None:
+                atac = summarize_func(atac)
+            adata_obsm[region_identifier] = atac
+        printer.insertionadata[save_key] = adata

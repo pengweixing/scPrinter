@@ -9,10 +9,12 @@ import MOODS.scan
 import MOODS.tools
 import MOODS.parsers
 import numpy as np
+import pandas as pd
 from Bio import motifs
 from tqdm.auto import tqdm, trange
 from . import genome
 from .datasets import JASPAR2022_core, CisBP_Human, CisBPJASPA
+from .utils import regionparser
 from pyfaidx import Fasta
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 from functools import partial
@@ -22,21 +24,78 @@ from pathlib import Path
 from typing_extensions import Literal
 
 def consecutive(data, stepsize=1):
-
     return np.split(data, np.where(np.diff(data) != stepsize)[0] + 1)
 
 def thresholds_from_p(m, bg, pvalue):
     return MOODS.tools.threshold_from_p(m, bg, pvalue)
 
-def _jaspar_to_moods_matrix(jaspar_motif, bg, pseudocount):
-    with tempfile.NamedTemporaryFile() as fn:
+
+class PFM:
+    def __init__(self,
+                 name,
+                 counts):
+        self.name = name
+        self.counts = counts
+        self.length = len(counts['A'])
+
+
+def parse_jaspar(file_path):
+    # Initialize variables
+    records = []
+    record = None
+
+    # Open the file for reading
+    with open(file_path, 'r') as file:
+        for line in file:
+            line = line.strip()  # Remove leading/trailing whitespaces
+            if line.startswith('>'):  # Record name line
+                # Save the previous record if it exists
+                if record:
+                    records.append(PFM(record['name'], record['weights']))
+                # Start a new record
+                record = {'name': line[1:].replace(' ', ''), 'weights': {'A': [], 'C': [], 'G': [], 'T': []}}
+            elif len(line) > 0:
+                # Parse the weight line
+                nucleotide, values_str = line.split(' ', 1)
+                values = list(map(float, values_str.strip('[]').split()))
+                if record:
+                    record['weights'][nucleotide] = values
+
+        # Don't forget to add the last record after exiting the loop
+        if record:
+            records.append(PFM(record['name'], record['weights']))
+
+    return records
+
+
+def _jaspar_to_moods_matrix(jaspar_motif, bg, pseudocount, mode='motifmatchr'):
+
+    with (tempfile.NamedTemporaryFile() as fn):
         f = open(fn.name, "w")
         for base in 'ACGT':
             line = " ".join(str(x) for x in jaspar_motif.counts[base])
             f.write(line + "\n")
 
         f.close()
-        return MOODS.parsers.pfm_to_log_odds(fn.name, bg, pseudocount, 2)
+        if mode != 'motifmatchr':
+            m = MOODS.parsers.pfm_to_log_odds(fn.name, bg, pseudocount, 2)
+        else:
+            even = [0.25, 0.25, 0.25, 0.25]
+            m =  MOODS.parsers.pfm_to_log_odds(fn.name, even, pseudocount, 2)
+            m = [tuple(m[i] - (np.log2(0.25) - np.log2(bg[i]))) for i in range(len(bg))]
+        return m
+
+
+def global_scan(seq, motifs_length, motifs_name, chr, start, end, peak_idx, tfs, clean, split_tfs, strand):
+    global scanner
+    scan_res = scanner.scan(str(seq))
+    results = [[[xxx.pos, xxx.score] for xxx in xx] for xx in scan_res]
+
+    return _parse_scan_results_all(results,
+                                   motifs_length, motifs_name,
+                                   {'chr': chr, 'start': start, 'end': end, 'index': peak_idx},
+                                   tfs, clean, split_tfs, strand)
+
 
 def _parse_scan_results_all(moods_scan_res,
                             motifs_length,
@@ -107,6 +166,9 @@ def _parse_scan_results_all(moods_scan_res,
 
                 all_hits.append(record)
     return all_hits
+
+
+
 
 def _parse_scan_results_clean(moods_scan_res, motifs, bed_coord, tfs):
     """ Parse results of MOODS.scan.scan_dna and return/write
@@ -221,12 +283,15 @@ class Motifs:
                  pseudocount: float = 0.8,
                  pvalue: float = 5e-5,
                  nCores: int = 32,
-                 split_tf: bool = True
+                 split_tf: bool = True,
+                 mode: Literal['motifmatchr', 'moods'] = 'motifmatchr'
                  ):
         self.n_jobs = nCores
-        self.pool = ProcessPoolExecutor(max_workers=nCores)
-        with open(ref_path_motif, "r") as infile:
-            self.all_motifs = list(motifs.parse(infile, "jaspar"))
+        self.mode = mode
+        # self.pool = ProcessPoolExecutor(max_workers=nCores)
+        # with open(ref_path_motif, "r") as infile:
+        #     self.all_motifs = list(motifs.parse(infile, "jaspar"))
+        self.all_motifs = parse_jaspar(ref_path_motif)
         # self.all_motifs = np.array(self.all_motifs,dtype=object)
         self.names = [set(motif.name.split(",")) if split_tf else {motif.name} for motif in self.all_motifs]
         self.tfs = set().union(*self.names)
@@ -247,6 +312,7 @@ class Motifs:
             self.pre_matrices_m, \
             self.pre_thresholds_m = self._prepare_moods_settings(self.all_motifs, self.bg, pseudocount, pvalue)
         self.pseudocount = pseudocount
+
         self.pvalue = pvalue
 
 
@@ -275,6 +341,7 @@ class Motifs:
         scanner: MOODS.scan.Scanner
 
         """
+        global scanner
         if tf_genes is None:
             tf_genes = self.tfs
         tf_genes_set = set(tf_genes)
@@ -296,12 +363,13 @@ class Motifs:
         matrices = np.concatenate([matrices_p, matrices_m])
         thresholds = np.concatenate([threshold_p, threshold_m])
 
-        scanner = MOODS.scan.Scanner(window)  # parameter is the window size
-        scanner.set_motifs(matrices, self.bg, thresholds)
-        self.scanner = scanner
+        scanner_ = MOODS.scan.Scanner(window)  # parameter is the window size
+        scanner_.set_motifs(matrices, self.bg, thresholds)
+        self.scanner = scanner_
+        scanner = scanner_
         self.tfs = set(tf_genes)
         # print ("finish preparing scanner")
-        return scanner
+        return scanner_
 
     def scan_once(self, chr, start, end,
                   clean: bool = False,
@@ -309,12 +377,13 @@ class Motifs:
                   split_tfs: bool = True,
                   strand: bool = True,
                   ):
+        global scanner
         scanner = self.scanner
         # motif = self.all_motifs[self.select]
         motif = [motif for motif, keep in zip(self.all_motifs, self.select) if keep]
         motifs_length = [m.length for m in motif]
         motifs_name = [m.name for m in motif]
-        seq = self.genome_seq[chr][start:end].seq
+        seq = self.genome_seq[chr][start:end].seq.upper()
 
         # seq is of unicode format, need to convert to str
         scan_res = scanner.scan(str(seq))
@@ -326,12 +395,23 @@ class Motifs:
                                    self.tfs, clean, split_tfs, strand)
 
 
+    def chromvar_scan(self, adata,
+                      verbose: bool = True):
+        peaks = regionparser(list(adata.var_names))
+        res = self.scan_motif(peaks, verbose=verbose, count=True)
+        res = np.array(res)
+        res = pd.DataFrame(res, index=adata.var_names,
+                           columns=[m.name for m in self.all_motifs])
+        adata.varm['motif_match'] = res.to_numpy()
+        adata.uns['motif_name'] = res.columns
+
     def scan_motif(self, peaks_iter,
                     clean: bool = False,
                     concat: bool = True,
                    verbose: bool = False,
                    split_tfs: bool = True,
                     strand: bool = True,
+                   count: bool = False,
                     ):
         """
         Scan motifs in the peaks iterator
@@ -355,33 +435,45 @@ class Motifs:
         -------
 
         """
-
+        global scanner
         scanner = self.scanner
+
         maps = [[] for i in range(len(peaks_iter))]
         # motif = self.all_motifs[self.select]
         motif = [motif for motif, keep in zip(self.all_motifs, self.select) if keep]
         motifs_length = [m.length for m in motif]
         motifs_name = [m.name for m in motif]
+        name2id = {name: i for i, name in enumerate(motifs_name)}
+
 
         peaks_iter = np.array(peaks_iter)
         if verbose: bar = trange(len(peaks_iter) * 2)
         # results_all = []
+        pool = ProcessPoolExecutor(max_workers=self.n_jobs)
         p_list = []
         for peak_idx, peak in enumerate(peaks_iter):
             # peak = peaks_iter[peak_idx]
             chr = peak[0]
             start = int(peak[1])
             end = int(peak[2])
-            seq = self.genome_seq[chr][start:end].seq
+            seq = self.genome_seq[chr][start:end].seq.upper()
 
             # seq is of unicode format, need to convert to str
-            scan_res = scanner.scan(str(seq))
-            results = [[[xxx.pos, xxx.score] for xxx in xx] for xx in scan_res]
-
-            p_list.append(self.pool.submit(_parse_scan_results_all, results,
-                                            motifs_length, motifs_name,
-                                            {'chr': chr, 'start': start, 'end': end, 'index': peak_idx},
-                                            self.tfs, clean, split_tfs, strand))
+            # scan_res = scanner.scan(str(seq))
+            # bar.update(1)
+            # results = [[[xxx.pos, xxx.score] for xxx in xx] for xx in scan_res]
+            #
+            # p_list.append(self.pool.submit(_parse_scan_results_all, results,
+            #                                 motifs_length, motifs_name,
+            #                                 {'chr': chr, 'start': start, 'end': end, 'index': peak_idx},
+            #                                 self.tfs, clean, split_tfs, strand))
+            p_list.append(pool.submit(global_scan,
+                                           seq,
+                                           motifs_length,
+                                           motifs_name,
+                                           chr, start, end,
+                                           peak_idx,
+                                           self.tfs, clean, split_tfs, strand))
 
             if len(p_list) >= (self.n_jobs * 10):
                 for p in as_completed(p_list):
@@ -391,7 +483,13 @@ class Motifs:
 
                     if len(all_hits) > 0:
                         idx = all_hits[0][3]
-                        maps[idx] = all_hits
+                        if not count:
+                            maps[idx] = all_hits
+                        else:
+                            freq = np.zeros((1,len(motifs_length)))
+                            for hit in all_hits:
+                                freq[0, name2id[hit[4]]] = 1
+                            maps[idx] = freq
                     p_list.remove(p)
                     del p
 
@@ -406,9 +504,19 @@ class Motifs:
             all_hits = p.result()
             if len(all_hits) > 0:
                 idx = all_hits[0][3]
-                maps[idx] = all_hits
-        self.pool.shutdown(wait=True)
-        self.pool = ProcessPoolExecutor(max_workers=self.n_jobs)
+                if not count:
+                    maps[idx] = all_hits
+                else:
+                    freq = np.zeros((1,len(motifs_length)))
+                    for hit in all_hits:
+                        freq[0, name2id[hit[4]]] = 1
+                    maps[idx] = freq
+        if count:
+            for i in range(len(maps)):
+                if len(maps[i]) == 0:
+                    maps[i] = np.zeros((1,len(motifs_length)))
+
+        pool.shutdown(wait=True)
         # maps = list(self.pool.map(_parse_scan_results, results_all)) if not clean else list(self.pool.map(_parse_scan_results_clean, results_all))
         if verbose:
             bar.close()
@@ -425,31 +533,27 @@ class Motifs:
         pseudocount, significant to the give pvalue
         """
         start = time.time()
-        matrices_p = list(self.pool.map(partial(_jaspar_to_moods_matrix, bg=bg, pseudocount=pseduocount),
+        pool = ProcessPoolExecutor(max_workers=self.n_jobs)
+        matrices_p = list(pool.map(partial(_jaspar_to_moods_matrix, bg=bg, pseudocount=pseduocount, mode=self.mode),
                                         jaspar_motifs, chunksize=100))
-        matrices_m = list(self.pool.map(MOODS.tools.reverse_complement, matrices_p, chunksize=100))
+        matrices_m = list(pool.map(MOODS.tools.reverse_complement, matrices_p, chunksize=100))
         # print('get_mtx', time.time() - start)
         start = time.time()
 
 
-        thresholds_p = list(self.pool.map(partial(thresholds_from_p, bg=bg, pvalue=pvalue), matrices_p, chunksize=100))
-        thresholds_m = list(self.pool.map(partial(thresholds_from_p, bg=bg, pvalue=pvalue), matrices_m, chunksize=100))
+        thresholds_p = list(pool.map(partial(thresholds_from_p, bg=bg, pvalue=pvalue), matrices_p, chunksize=100))
+        thresholds_m = thresholds_p if self.mode == 'motifmatchr' else list(pool.map(partial(thresholds_from_p, bg=bg, pvalue=pvalue), matrices_m, chunksize=100))
         # thresholds_p = [MOODS.tools.threshold_from_p(m, bg, pvalue) for m in matrices_p]
         # thresholds_m = [MOODS.tools.threshold_from_p(m, bg, pvalue) for m in matrices_m]
         # print('get_thresholds', time.time() - start)
         start = time.time()
         # print (thresholds_p, thresholds_m)
-        self.pool.shutdown(wait=True)
-        self.pool = ProcessPoolExecutor(max_workers=self.n_jobs)
+        pool.shutdown(wait=True)
+        # self.pool = ProcessPoolExecutor(max_workers=self.n_jobs)
         return np.array(matrices_p,dtype=object), np.array(thresholds_p,dtype=object), \
             np.array(matrices_m,dtype=object), np.array(thresholds_m,dtype=object)
 
-
-
-
-
-
-def JASPAR2022_core_Motifs(genome: genome.Genome, bg):
+def JASPAR2022_core_Motifs(genome: genome.Genome, bg, **kwargs):
     """
     Jaspar2022 core motifs
 
@@ -464,10 +568,10 @@ def JASPAR2022_core_Motifs(genome: genome.Genome, bg):
     """
     if bg == 'genome':
         bg = genome.bg
-    return Motifs(JASPAR2022_core(), genome.fetch_fa(), bg)
+    return Motifs(JASPAR2022_core(), genome.fetch_fa(), bg, **kwargs)
 
 
-def CisBPHuman_Motifs(genome: genome.Genome, bg):
+def CisBPHuman_Motifs(genome: genome.Genome, bg, **kwargs):
     """
     CisBP Human motifs
 
@@ -482,9 +586,9 @@ def CisBPHuman_Motifs(genome: genome.Genome, bg):
     """
     if bg == 'genome':
         bg = genome.bg
-    return Motifs(CisBP_Human(), genome.fetch_fa(), bg)
+    return Motifs(CisBP_Human(), genome.fetch_fa(), bg, **kwargs)
 
-def CisBP_JASPAR_Motifs(genome: genome.Genome, bg):
+def CisBP_JASPAR_Motifs(genome: genome.Genome, bg, **kwargs):
     """
     CisBP + JASPAR motifs (will have redundant motif hits!)
     Only use when the TF you study have really bad motifs
@@ -500,4 +604,5 @@ def CisBP_JASPAR_Motifs(genome: genome.Genome, bg):
     """
     if bg == 'genome':
         bg = genome.bg
-    return Motifs(CisBPJASPA(), genome.fetch_fa(), bg)
+    return Motifs(CisBPJASPA(), genome.fetch_fa(), bg, **kwargs)
+

@@ -9,6 +9,7 @@ from . import motifs
 from . import datasets
 from . import fetch
 from . import utils
+from . import peak
 # from . import HMM
 
 import sys

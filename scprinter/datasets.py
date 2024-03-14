@@ -75,7 +75,11 @@ def datasets():
                 "gencode_vM30_GRCm39.fa.gz": "sha256:3b923c06a0d291fe646af6bf7beaed7492bf0f6dd5309d4f5904623cab41b0aa",
 
                 # Tutorial files
-                "BMMCTutorial.zip": "md5:d9027cf73b558d03276483384ddad88c"
+                "BMMCTutorial.zip": "md5:d9027cf73b558d03276483384ddad88c",
+                
+                # Blacklist file
+                "hg38-blacklist.v2.bed.gz": "md5:83fe6bf8187a64dee8079b80f75ba289",
+                "mm10-blacklist.v2.bed.gz": "md5:4ae47e40309533c2a71de55494cda9bc",
             },
             urls={
                 "dispersion_model_py.h5": "https://drive.google.com/uc?export=download&id=1O7zGvmJIArJjLooW0pzZyEbm2AaFE2bg",
@@ -108,6 +112,11 @@ def datasets():
                 "gencode_vM25_GRCm38.fa.gz": "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M25/GRCm38.primary_assembly.genome.fa.gz",
                 "gencode_vM30_GRCm39.gff3.gz": "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M30/gencode.vM30.basic.annotation.gff3.gz",
                 "gencode_vM30_GRCm39.fa.gz": "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_mouse/release_M30/GRCm39.primary_assembly.genome.fa.gz",
+
+                # Blacklist file
+                "hg38-blacklist.v2.bed.gz": "https://github.com/Boyle-Lab/Blacklist/raw/master/lists/hg38-blacklist.v2.bed.gz",
+                "mm10-blacklist.v2.bed.gz": "https://github.com/Boyle-Lab/Blacklist/raw/master/lists/mm10-blacklist.v2.bed.gz",
+
 
                 "BMMCTutorial.zip": 'https://drive.google.com/uc?export=download&confirm=s5vl&id=1L-9yPkNKf-IcWgubfp2Yz2oYusEVEico'
             },

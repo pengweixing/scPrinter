@@ -459,4 +459,6 @@ def plot_weights(array,
                           highlight=highlight)
     ax.axis('off')
     plt.tight_layout()
+    # return ax
     plt.show()
+    return

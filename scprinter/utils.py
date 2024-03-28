@@ -16,6 +16,7 @@ import pybedtools
 from pathlib import Path
 from scipy.sparse import csr_matrix
 import scipy
+import tempfile
 
 def DNA_one_hot(sequence,
                 alphabet='ACGT',
@@ -228,22 +229,22 @@ def frags_to_insertions(data, split=False):
     return data
 
 def check_snap_insertion(shift_left=0, shift_right=0):
-    temp_fragments = gzip.open("temp_fragments.tsv.gz", "wt")
-    # This checks the end to see if snapatac2 now would do insertion at end, or end-1
-    for i in range(100):
-        temp_fragments.write("chr1\t%d\t%d\tbarcode1\t1\n" % (4, 100))
-    temp_fragments.close()
-    data = snap.pp.import_data("temp_fragments.tsv.gz",
-                           chrom_sizes=snap.genome.hg38.chrom_sizes,
-                           min_num_fragments=0,
-                           shift_left=shift_left,
-                           shift_right=shift_right,
-                           # file='testabcdefg.h5ad'
-                               )
-    data = frags_to_insertions(data)
-    v = np.array(data.obsm['insertion'][0, :200].toarray()).reshape((-1))
-    os.remove("temp_fragments.tsv.gz")
-    # If true: The fixed version I compiled or they fixed it, else not fixed
+    with tempfile.TemporaryDirectory() as tempdir:
+        temp_fragments = gzip.open(f"{tempdir}/temp_fragments.tsv.gz", "wt")
+        # This checks the end to see if snapatac2 now would do insertion at end, or end-1
+        for i in range(100):
+            temp_fragments.write("chr1\t%d\t%d\tbarcode1\t1\n" % (4, 100))
+        temp_fragments.close()
+        data = snap.pp.import_data(f"{tempdir}/temp_fragments.tsv.gz",
+                            chrom_sizes=snap.genome.hg38.chrom_sizes,
+                            min_num_fragments=0,
+                            shift_left=shift_left,
+                            shift_right=shift_right,
+                            # file='testabcdefg.h5ad'
+                            )
+        data = frags_to_insertions(data)
+        v = np.array(data.obsm['insertion'][0, :200].toarray()).reshape((-1))
+        # If true: The fixed version I compiled or they fixed it, else not fixed
     return v[100] == 100
 
 

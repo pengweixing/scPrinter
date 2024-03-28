@@ -8,7 +8,8 @@ from .io import load_printer, PyPrinter
 from scprinter.shift_detection import detect_shift
 import pyBigWig
 from tqdm.auto import tqdm, trange
-from scipy.sparse import coo_matrix
+from scipy.sparse import coo_matrix, hstack, vstack, csr_matrix, csc_matrix
+from anndata import AnnData
 import numpy as np
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -211,6 +212,37 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
     data.close()
 
     return load_printer(savename, genome)
+
+def make_peak_matrix(printer: PyPrinter,
+                     regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
+                     region_width: int | None = None,):
+    """
+    Generate a peak matrix for the given regions
+    Parameters
+    ----------
+    printer
+    regions
+
+    Returns
+    -------
+
+    """
+    regions = regionparser(regions, printer, region_width)
+    region_identifiers = df2regionidentifier(regions)
+
+    insertion_profile = printer.fetch_insertion_profile()
+    res = []
+    for i, (chrom, start, end) in enumerate(zip(tqdm(regions.iloc[:, 0], desc="Making peak matrix"), regions.iloc[:, 1], regions.iloc[:, 2])):
+        v = csc_matrix(insertion_profile[chrom][:, start:end].sum(axis=-1), dtype='uint16')
+        res.append(v)
+    res = hstack(res).tocsr()
+    print (res.shape)
+    adata = AnnData(X=res)
+    adata.obs.index = printer.insertion_file.obs_names[:]
+    adata.var.index = region_identifiers
+    return adata
+
+
 
 def collapse_barcodes(*args, **kwargs):
     sync_footprints(*args, **kwargs)

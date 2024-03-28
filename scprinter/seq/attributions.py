@@ -17,7 +17,8 @@ from typing import Literal
 from .ism import ism
 import pandas as pd
 import pyfaidx
-from ..utils import DNA_one_hot
+from ..utils import DNA_one_hot, zscore2pval_torch, zscore2pval
+import torch.nn.functional as F
 
 params = 'void(int64, int64[:], int64[:], int32[:, :], int32[:,], '
 params += 'int32[:, :], float32[:, :, :], int32)'
@@ -264,7 +265,8 @@ def attribution_to_bigwig(attributions,
                           chrom_size,
                            res=1,
                           mode='average',
-                          output='attribution.bigwig'):
+                          output='attribution.bigwig',
+                          verbose=True):
     """
 
 
@@ -293,9 +295,9 @@ def attribution_to_bigwig(attributions,
     cluster_stats = regions.drop_duplicates('cluster')
     cluster_stats = cluster_stats.sort_values(by=['chrom', 'start', 'end'])
     order_of_cluster = np.array(cluster_stats['cluster'])
-    print (regions)
+    # print (regions)
     aa = regions.groupby('cluster')
-    print (aa)
+    # print (aa)
     # clusters = {cluster: group for cluster, group in tqdm(aa)}
 
     header = []
@@ -309,7 +311,7 @@ def attribution_to_bigwig(attributions,
                    'values': []}
 
 
-    for cluster in tqdm(order_of_cluster, dynamic_ncols=True):
+    for cluster in tqdm(order_of_cluster, dynamic_ncols=True, disable=not verbose):
         # region_temp = clusters[cluster]
         region_temp = aa.get_group(cluster)
         chroms, starts, ends = np.array(region_temp['chrom']), region_temp['start'], region_temp['end']
@@ -317,7 +319,7 @@ def attribution_to_bigwig(attributions,
         attributions_chrom = attributions[mask]
 
         if str(chroms[0]) != stuff_to_add['chroms'] and stuff_to_add['chroms'] is not None:
-            print("writing")
+            # print("writing")
             chrom = stuff_to_add['chroms']
             points = np.concatenate(stuff_to_add['points'])
             values = np.concatenate(stuff_to_add['values'])
@@ -368,7 +370,7 @@ def attribution_to_bigwig(attributions,
         stuff_to_add['points'].append(points)
         stuff_to_add['values'].append(importance_track[indx])
 
-    print("writing")
+    # print("writing")
     chrom = stuff_to_add['chroms']
     points = np.concatenate(stuff_to_add['points'])
     values = np.concatenate(stuff_to_add['values'])
@@ -377,11 +379,39 @@ def attribution_to_bigwig(attributions,
 
     bw.close()
 
+def count_delta(alt, ref):
+    alt = alt[1].detach().cpu().numpy()
+    ref = ref[1].detach().cpu().numpy()
+    return float(alt - ref)
 
+def footprint_delta(alt, ref):
+    alt = alt[0].reshape((1, -1))
+    ref = ref[0].reshape((1, -1))
+    alt = alt - torch.mean(alt, dim=-1, keepdims=True)
+    ref = ref - torch.mean(ref, dim=-1, keepdims=True)
+    alt = zscore2pval_torch(alt)
+    ref = zscore2pval_torch(ref)
+    alt = F.relu(alt - 0.31)
+    ref = F.relu(ref - 0.31)
+    return float(alt.sum() - ref.sum())
+
+def tf_footprint_delta(alt, ref):
+    alt = alt[0][:, :30].reshape((1, -1))
+    ref = ref[0][:, :30].reshape((1, -1))
+    alt = alt - torch.mean(alt, dim=-1, keepdims=True)
+    ref = ref - torch.mean(ref, dim=-1, keepdims=True)
+    alt = zscore2pval_torch(alt)
+    ref = zscore2pval_torch(ref)
+    alt = F.relu(alt - 0.31)
+    ref = F.relu(ref - 0.31)
+    return float(alt.sum() - ref.sum())
+
+@torch.no_grad()
 def vcf_attribution(vcf_path,
                     seq_len,
                     fasta,
-                    model):
+                    model,
+                    delta_func=None):
     ref_seq = pyfaidx.Fasta(fasta)
     vcf = pd.read_csv(vcf_path, sep='\t', header=None)
     vcf.columns = ['chrom', 'pos', 'name', 'REF', 'ALT', 'sth1', 'sth2']
@@ -404,14 +434,14 @@ def vcf_attribution(vcf_path,
 
         _X = DNA_one_hot(seq)
         _X = _X[None]
-        _ref = model(_X.float().to(dev)).detach().cpu().numpy()
+        _ref = model(_X.float().to(dev))
         seq = list(seq)
         seq[center] = vcf.iloc[i]['ALT']
         seq = ''.join(seq)
         _X = DNA_one_hot(seq)
         _X = _X[None]
-        _alt = model(_X.float().to(dev)).detach().cpu().numpy()
-        delta = float((_alt - _ref).reshape((-1)))
+        _alt = model(_X.float().to(dev))
+        delta = delta_func(_alt, _ref)
         deltas.append(delta)
     vcf['deltas'] = deltas
     return vcf

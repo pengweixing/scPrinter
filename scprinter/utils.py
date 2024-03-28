@@ -95,6 +95,40 @@ def get_stats_for_genome(fasta_file):
     bg = MOODS.tools.bg_from_sequence_dna(str(b), 1)
     return chrom_sizes, bg
 
+def GC_content(dna_string):
+    a,c,g,t = 0,0,0,0
+    # Iterate over each character in the string and increment the corresponding count
+    for nucleotide in dna_string:
+        if nucleotide == 'G':
+            g += 1
+        elif nucleotide == 'C':
+            c += 1
+        elif nucleotide == 'A':
+            a += 1
+        elif nucleotide == 'T':
+            t += 1
+
+    return a,c,g,t
+
+
+def get_peak_bias(region, genome):
+    peaks = region
+    gc_contents = []
+    overall_freq = [0,0,0,0]
+    for chrom, start, end in peaks.iloc[:, 0:3].values:
+        seq = genome.fetch_seq(chrom, start, end).upper()
+        a,c,g,t = GC_content(seq)
+        overall_freq[0] += a
+        overall_freq[1] += c
+        overall_freq[2] += g
+        overall_freq[3] += t
+        gc_contents.append((g+c) / (a+c+g+t))
+    gc_contents = np.asarray(gc_contents)
+    gc_contents[np.isnan(gc_contents)] = 0.5
+
+    overall_freq = overall_freq / np.sum(overall_freq)
+    return  overall_freq
+
 
 def get_genome_bg(genome):
     genome_seq = Fasta(genome.fetch_fa())

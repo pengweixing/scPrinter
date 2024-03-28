@@ -311,6 +311,27 @@ class scFootprintBPNet(nn.Module):
 
         return score
 
+    def load_train_state_dict(self, ema, optimizer, scaler, savename):
+        print("Nan training loss, load last OK-ish checkpoint")
+        device = next(self.parameters()).device
+        print (device)
+        # self.cpu()
+        checkpoint = torch.load(savename)
+        self.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        scaler.load_state_dict(checkpoint['scaler'])
+        # self.to(device)
+        # optimizer = optimizer.to(device)
+        # scaler = scaler.to(device)
+
+        del checkpoint
+        torch.cuda.empty_cache()
+        # if ema:
+        #     # ema = ema.cpu()
+        #     ema = torch.load(savename + '.ema.pt')
+            # ema = ema.to(device)
+        return ema, optimizer, scaler
+
     def fit(self,
             dispmodel,
             training_data,
@@ -365,7 +386,7 @@ class scFootprintBPNet(nn.Module):
         if use_amp:
             print ("Using amp")
         scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
-
+        # min_scale = 128
         for epoch in range(max_epochs):
             bar = trange(validation_freq, desc=' - (Training) {epoch}'.format(
                 epoch=epoch + 1), leave=False, dynamic_ncols=True)
@@ -376,7 +397,7 @@ class scFootprintBPNet(nn.Module):
             training_index_all = np.random.permutation(len(training_data))
             training_data_epoch_loader = training_data.resample()
             for data in training_data_epoch_loader:
-                with (torch.autocast(device_type='cuda', dtype=torch.float16, enabled=use_amp)):
+                with (torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp)):
                     random_modes = np.random.permutation(modes)[:30]
                     select_index = torch.as_tensor([index_all.index(mode) for mode in random_modes])
                     if len(data) == 2:
@@ -431,22 +452,33 @@ class scFootprintBPNet(nn.Module):
                     desc_str += " Coverage Loss: {loss:.2f}".format(loss=loss_coverage.item())
 
                     loss = (loss_footprint + loss_coverage) / accumulate_grad
-                    scaler.scale(loss).backward()
-                    moving_avg_loss += loss_footprint.item()
-                    if (iteration + 1) % accumulate_grad == 0:
-                        scaler.step(optimizer)
-                        scaler.update()
-                        optimizer.zero_grad()
+                    if np.isnan(loss.item()):
+                        ema, optimizer, scaler = self.load_train_state_dict(ema, optimizer, scaler, savename)
+                        continue
 
-                        if ema:
-                            ema.update()
-                        if scheduler is not None:
-                            scheduler.step()
-                    bar.set_description(desc_str)
-                    bar.update(1)
-                    iteration += 1
-                    if iteration >= validation_freq:
-                        break
+                scaler.scale(loss).backward()
+                moving_avg_loss += loss_footprint.item()
+                if (iteration + 1) % accumulate_grad == 0:
+                    scaler.unscale_(
+                        optimizer)  # Unscale gradients for clipping without inf/nan gradients affecting the model
+                    # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5.0)  # Adjust max_norm accordingly
+
+
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                    # if scaler._scale < min_scale:
+                    #     scaler._scale = torch.tensor(min_scale).to(scaler._scale)
+
+                    if ema:
+                        ema.update()
+                    if scheduler is not None:
+                        scheduler.step()
+                bar.set_description(desc_str)
+                bar.update(1)
+                iteration += 1
+                if iteration >= validation_freq:
+                    break
 
             print(' - (Training) {epoch} Loss: {loss:.2f}'.format(
                     epoch=epoch + 1,
@@ -464,15 +496,18 @@ class scFootprintBPNet(nn.Module):
 
             val_loss_all = np.sum(val_loss)
             if np.isnan(val_loss_all):
-                print ("Nan loss")
-                wandb.log({"train/train_loss": np.nan,
-                            "val/val_loss": np.nan,
-                            "val/best_val_loss": np.nan,
-                            "val/profile_pearson": np.nan,
-                            "val/across_pearson_footprint": np.nan,
-                            "val/across_pearson_coverage": np.nan,
-                           "epoch": epoch})
-                break
+                print ("Nan loss, load last OK-ish checkpoint")
+                ema, optimizer, scaler = self.load_train_state_dict(ema, optimizer, scaler, savename)
+                # optimizer.load_state_dict(torch.load(savename)['optimizer'])
+                # wandb.log({"train/train_loss": np.nan,
+                #             "val/val_loss": np.nan,
+                #             "val/best_val_loss": np.nan,
+                #             "val/profile_pearson": np.nan,
+                #             "val/across_pearson_footprint": np.nan,
+                #             "val/across_pearson_coverage": np.nan,
+                #            "epoch": epoch})
+
+                # break
             print(' - (Validation) {epoch} \
                         Loss: {loss:.5f}'.format(
                 epoch=epoch + 1, loss=val_loss_all))
@@ -494,15 +529,17 @@ class scFootprintBPNet(nn.Module):
                 val_loss_all = np.sum(val_loss)
 
                 if np.isnan(val_loss_all):
-                    print("Nan loss")
-                    wandb.log({"train/train_loss": np.nan,
-                               "val/val_loss": np.nan,
-                               "val/best_val_loss": np.nan,
-                               "val/profile_pearson": np.nan,
-                               "val/across_pearson_footprint": np.nan,
-                               "val/across_pearson_coverage": np.nan,
-                               "epoch": epoch})
-                    break
+                    print("Nan loss, load last OK-ish checkpoint")
+                    ema, optimizer, scaler = self.load_train_state_dict(ema, optimizer, scaler, savename)
+                    # print("Nan loss")
+                    # wandb.log({"train/train_loss": np.nan,
+                    #            "val/val_loss": np.nan,
+                    #            "val/best_val_loss": np.nan,
+                    #            "val/profile_pearson": np.nan,
+                    #            "val/across_pearson_footprint": np.nan,
+                    #            "val/across_pearson_coverage": np.nan,
+                    #            "epoch": epoch})
+                    # break
                 print(' - (Validation) {epoch} \
                 Loss: {loss:.5f}'.format(
                     epoch=epoch + 1, loss=val_loss_all))
@@ -523,7 +560,9 @@ class scFootprintBPNet(nn.Module):
                 checkpoint = {
                     'epoch': epoch + 1,
                     'state_dict': self.state_dict(),
-                    'optimizer': optimizer.state_dict()
+                    'optimizer': optimizer.state_dict(),
+                    'scaler': scaler.state_dict(),
+                    'ema': ema.state_dict() if ema else None
                 }
                 torch.save(checkpoint, savename)
                 torch.save(self, savename + '.model.pt')

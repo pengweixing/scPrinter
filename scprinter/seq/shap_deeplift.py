@@ -139,7 +139,7 @@ class PyTorchDeep(Explainer):
         scaler = GradScaler(enabled=self.amp)
 
 
-        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.amp):
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.amp):
             outputs = self.model(*X)
 
         selected = [val for val in outputs[:, idx]]

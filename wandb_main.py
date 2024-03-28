@@ -88,7 +88,7 @@ def main(config=None,
          enable_wandb=True,
          ):
     # Initialize a new wandb run
-    with ((wandb.init(config=config))):
+    with (((wandb.init(config=config)))):
         torch.set_num_threads(4)
         torch.backends.cudnn.benchmark = True
         disp_path = scp.datasets.pretrained_dispersion_model
@@ -231,14 +231,15 @@ def main(config=None,
                                                                            None,
                                                                            dispmodel,
                                                                            modes)
-        valid_loss, valid_within, valid_across = float(valid_loss[0]), float(valid_within[0]), float(
-            valid_across[0])
+        valid_loss, valid_within, valid_across, valid_cov = float(valid_loss[0]), float(valid_within[0]),\
+            float(valid_across[0]), float(valid_across[1])
         test_loss, test_within, test_across = validation_step_footprint(acc_model,
                                                                         dataloader['test'],
                                                                         None,
                                                                         dispmodel,
                                                                         modes)
-        test_loss, test_within, test_across = float(test_loss[0]), float(test_within[0]), float(test_across[0])
+        test_loss, test_within, test_across, test_cov = float(test_loss[0]), float(test_within[0]), \
+                                                float(test_across[0]), float(test_across[1])
         if enable_wandb:
             wandb.summary['final_valid_loss'] = valid_loss
             wandb.summary['final_valid_within'] = valid_within
@@ -246,6 +247,8 @@ def main(config=None,
             wandb.summary['final_test_loss'] = test_loss
             wandb.summary['final_test_within'] = test_within
             wandb.summary['final_test_across'] = test_across
+            wandb.summary['final_valid_cov'] = valid_cov
+            wandb.summary['final_test_cov'] = test_cov
 
 
         if 'shap' in config:

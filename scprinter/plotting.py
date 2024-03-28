@@ -443,6 +443,7 @@ def plot_footprints(printer: PyPrinter,
                     log_scale: bool = False,
                     log_offset: float = 1.1,
                     add_ticks: bool = False,
+                    clean_mode:bool = False,
                     **kwargs
                     ):
     """
@@ -596,11 +597,17 @@ def plot_footprints(printer: PyPrinter,
                     index = list(index.astype('int'))
                     ticks = np.array([index.index(int(xx*0.5)*2) for xx in ticklabel])#+log_offset
                     ax_.set_yticks(ticks=ticks, labels=ticklabel)
-                ax_.set_title('Multiscale footprints\n%s:%d-%d\n%s' % (region['Chromosome'][0],
-                                                    region['Start'][0],
-                                                    region['End'][0], str(group_name)))
+                if not clean_mode:
+                    ax_.set_title('Multiscale footprints\n%s:%d-%d\n%s' % (region['Chromosome'][0],
+                                                        region['Start'][0],
+                                                        region['End'][0], str(group_name)))
 
         plt.tight_layout()
+        if clean_mode:
+            plt.axis('off')
+            plt.subplots_adjust(top=1, bottom=0, right=1, left=0,
+                                hspace=0, wspace=0)
+            plt.margins(0, 0)
         return
     else:
         data = data[:, 0, :]
@@ -718,24 +725,16 @@ def plot_motif_match_static(motif: motifs.Motifs,
     if color_dict is None:
         color = list(default_102) * 5
         tfs = set([match[4] for match in motif_matchs])
-        # print(len(tfs))
         color_dict = {tf: color[i] for i, tf in enumerate(tfs)}
 
-    # [bed_coord['chr'], bed_coord['start'],
-    #   bed_coord['end'], bed_coord['index'],
-    #   name, score,
-    #   strand, motif_start, motif_end
 
-    features = [GraphicFeature(start=match[7] ,
-                               end=match[8] ,
-                               strand=match[6],
-                               color=color_dict[match[4]],
-                               label=match[4]) for i, match in enumerate(motif_matchs)]
-    record = GraphicRecord(sequence_length=e - s, features=features)
-    _ = record.plot(ax=ax)
+    plot_genome_annotations(ax, start=[match[7] for match in motif_matchs],
+                     end=[match[8] for match in motif_matchs],
+                        label=[match[4] for match in motif_matchs],
+                        strand=[match[6] for match in motif_matchs],
+                        color_dict=color_dict)
 
-
-def plot_annotations(ax: matplotlib.axes.Axes,
+def plot_genome_annotations(ax: matplotlib.axes.Axes,
                      start,
                      end,
                      label=None,
@@ -757,6 +756,11 @@ def plot_annotations(ax: matplotlib.axes.Axes,
     -------
 
     """
+    if strand is None:
+        strand = ['*' for _ in range(len(start))]
+    if label is None:
+        label = ['' for _ in range(len(start))]
+
     uniq_label = np.unique(label)
     if len(uniq_label) <= 20:
         color = default_20
@@ -768,11 +772,13 @@ def plot_annotations(ax: matplotlib.axes.Axes,
     if color_dict is None and color is not None:
         color_dict = {tf: color[i] for i, tf in enumerate(uniq_label)}
 
-    # features = [GraphicFeature(start=match[7],
-    #                            end=match[8],
-    #                            strand=match[6],
-    #                            color=color_dict[match[4]],
-    #                            label=match[4]) for ]
-    # record = GraphicRecord(sequence_length=e - s, features=features)
-    # _ = record.plot(ax=ax)
+
+
+    features = [GraphicFeature(start=s,
+                               end=e,
+                               strand=sd,
+                               color=color_dict[lb],
+                               label=lb) for (s,e,sd, lb) in zip(start, end, strand, label)]
+    record = GraphicRecord(sequence_length=end-start, features=features)
+    _ = record.plot(ax=ax)
 

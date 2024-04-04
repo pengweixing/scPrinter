@@ -8,3 +8,4 @@
    scprinter_tutorial
    R_scprinter
    gpu_umap
+   gpu_chromvar

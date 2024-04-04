@@ -462,8 +462,13 @@ def dftopyranges(df):
 
 
 def df2regionidentifier(df):
-    return np.array(['%s:%d-%d' % (c, s, e) for c, s, e in
-                                  zip(df['Chromosome'], df['Start'], df['End'])])
+    if 'Chromosome' in df.columns and 'Start' in df.columns and 'End' in df.columns:
+        return np.array([f'{c}:{s}-{e}' for c, s, e in zip(df['Chromosome'], df['Start'], df['End'])])
+    elif 'chrom' in df.columns and 'start' in df.columns and 'end' in df.columns:
+        return np.array([f'{c}:{s}-{e}' for c, s, e in zip(df['chrom'], df['start'], df['end'])])
+    else:
+        # assume first 3 columns are chrom, start, end
+        return np.array([f'{c}:{s}-{e}' for c, s, e in zip(df.iloc[:, 0], df.iloc[:, 1], df.iloc[:, 2])])
 
 
 # This function will fetch the existing entries in f

@@ -639,13 +639,14 @@ def get_footprint_score(printer: PyPrinter,
 
         regions = regionparser(regions, printer, region_width)
         region_identifiers = df2regionidentifier(regions)
+        if save_key is None:
+            save_key = "FootPrints"
         save_path = os.path.join(os.path.dirname(printer.file_path),
                                  "%s.h5ad" % save_key) if backed else 'None'
         if 'footprints' not in printer.uns:
             printer.uns['footprints'] = {}
 
-        if save_key is None:
-            save_key = "FootPrints"
+
         if save_key in printer.uns['footprints'] or os.path.exists(save_path):
             # Check duplicates...
             if not overwrite:

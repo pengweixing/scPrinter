@@ -2,19 +2,17 @@ import torch
 
 from .utils import DNA_one_hot
 
+
 ### Haven't been cleaned
 class SignalWrapperFootprint(torch.nn.Module):
-    def __init__(self, model, nth_output=0,
-                 activation=None,
-                 transformation=None,
-                 res=1):
+    def __init__(self, model, nth_output=0, activation=None, transformation=None, res=1):
         super().__init__()
         self.model = model
         self.nth_output = nth_output
         self.activation = activation
         self.transformation = transformation
         self.res = res
-        self.sniff_padding('N' * 2114)
+        self.sniff_padding("N" * 2114)
 
     @torch.no_grad()
     def sniff_padding(self, X):
@@ -40,31 +38,33 @@ class SignalWrapperFootprint(torch.nn.Module):
         logits = logits[0]
         return logits
 
+
 class _ProfileLogitScaling(torch.nn.Module):
-	"""This ugly class is necessary because of Captum.
+    """This ugly class is necessary because of Captum.
 
-	Captum internally registers classes as linear or non-linear. Because the
-	profile wrapper performs some non-linear operations, those operations must
-	be registered as such. However, the inputs to the wrapper are not the
-	logits that are being modified in a non-linear manner but rather the
-	original sequence that is subsequently run through the model. Hence, this
-	object will contain all of the operations performed on the logits and
-	can be registered.
+    Captum internally registers classes as linear or non-linear. Because the
+    profile wrapper performs some non-linear operations, those operations must
+    be registered as such. However, the inputs to the wrapper are not the
+    logits that are being modified in a non-linear manner but rather the
+    original sequence that is subsequently run through the model. Hence, this
+    object will contain all of the operations performed on the logits and
+    can be registered.
 
 
-	Parameters
-	----------
-	logits: torch.Tensor, shape=(-1, -1)
-		The logits as they come out of a Chrom/BPNet model.
-	"""
+    Parameters
+    ----------
+    logits: torch.Tensor, shape=(-1, -1)
+            The logits as they come out of a Chrom/BPNet model.
+    """
 
-	def __init__(self):
-		super(_ProfileLogitScaling, self).__init__()
+    def __init__(self):
+        super(_ProfileLogitScaling, self).__init__()
 
-	def forward(self, logits):
-		y = torch.nn.functional.log_softmax(logits, dim=-1)
-		y = logits * torch.exp(y).detach()
-		return y
+    def forward(self, logits):
+        y = torch.nn.functional.log_softmax(logits, dim=-1)
+        y = logits * torch.exp(y).detach()
+        return y
+
 
 # This kinda mimics the way chrombpnet handles shape, but for sigmoid based stuff
 class InverseSigmoid(torch.nn.Module):
@@ -82,18 +82,15 @@ class ProfileWrapperFootprintClass(torch.nn.Module):
         ----------
         model: torch.nn.Module
             A torch model to be wrapped.
-        """
+    """
 
-    def __init__(self, model, nth_output=0,
-                 reduce_mean=True,
-                 res=1):
+    def __init__(self, model, nth_output=0, reduce_mean=True, res=1):
         super().__init__()
         self.model = model
         self.nth_output = nth_output
         self.res = res
         self.reduce_mean = reduce_mean
         self.scaling = InverseSigmoid()
-
 
     def forward(self, X, *args, **kwargs):
         logits = self.model(X, *args, **kwargs)[:, self.nth_output]
@@ -103,21 +100,22 @@ class ProfileWrapperFootprintClass(torch.nn.Module):
         y = self.scaling(logits)
         return (y).mean(axis=-1, keepdims=True)
 
+
 # This is for a regression model, and uses chrombpnet way of predicting the shape
 class ProfileWrapperFootprint(torch.nn.Module):
     """A wrapper class that returns transformed profiles.
 
-        This class takes in a trained model and returns the weighted softmaxed
-        outputs of the first dimension. Specifically, it takes the predicted
-        "logits" and takes the dot product between them and the softmaxed versions
-        of those logits. This is for convenience when using captum to calculate
-        attribution scores.
+    This class takes in a trained model and returns the weighted softmaxed
+    outputs of the first dimension. Specifically, it takes the predicted
+    "logits" and takes the dot product between them and the softmaxed versions
+    of those logits. This is for convenience when using captum to calculate
+    attribution scores.
 
-        Parameters
-        ----------
-        model: torch.nn.Module
-            A torch model to be wrapped.
-        """
+    Parameters
+    ----------
+    model: torch.nn.Module
+        A torch model to be wrapped.
+    """
 
     def __init__(self, model, nth_output=0, res=1, reduce_mean=True):
         super().__init__()
@@ -134,8 +132,6 @@ class ProfileWrapperFootprint(torch.nn.Module):
             logits = logits - torch.mean(logits, dim=-1, keepdims=True)
         y = self.scaling(logits)
         return (y).sum(axis=-1, keepdims=True)
-
-
 
     # def attribute(self, seq, additional_forward_args=None):
     #     dev = next(self.model.parameters()).device
@@ -177,7 +173,7 @@ class ProfileWrapper(torch.nn.Module):
     def forward(self, X, **kwargs):
         logits = self.model(X, **kwargs)[0]
         logits = logits.reshape(X.shape[0], -1)
-        logits = (logits - torch.mean(logits, dim=-1, keepdims=True))
+        logits = logits - torch.mean(logits, dim=-1, keepdims=True)
 
         y = self.scaling(logits)
         return y.sum(axis=-1, keepdims=True)

@@ -1,17 +1,20 @@
 from __future__ import annotations
+
+import atexit
+import gc
+from pathlib import Path
+
 import anndata
-from .import genome
-from .utils import *
+import gffutils
 import h5py
 import pyBigWig
 from tqdm.auto import tqdm, trange
-import gffutils
-import gc
-import atexit
-from pathlib import Path
+
+from . import genome
+from .utils import *
 
 
-class PyPrinter():
+class PyPrinter:
     """
     Core Class of scprinter
 
@@ -29,35 +32,39 @@ class PyPrinter():
         whether to attach the footprintsadata / bindingscoreadata to the printer object
 
     """
-    def __init__(self,
-                 adata: snap.AnnData | anndata.AnnData | None = None,
-                 adata_path: str | Path | None = None,
-                 insertion_profile: dict | None = None, # direct assignment of insertion_profile
-                 genome: genome.Genome | None = None, # a scp.genome object
-                 attach: bool = True
-                 ) -> None:
+
+    def __init__(
+        self,
+        adata: snap.AnnData | anndata.AnnData | None = None,
+        adata_path: str | Path | None = None,
+        insertion_profile: dict | None = None,  # direct assignment of insertion_profile
+        genome: genome.Genome | None = None,  # a scp.genome object
+        attach: bool = True,
+    ) -> None:
 
         self.bindingscoreadata = {}
         self.footprintsadata = {}
         self.insertionadata = {}
-        self.gene_region_width=1000
-        self.genome=genome
+        self.gene_region_width = 1000
+        self.genome = genome
         if adata is not None:
             # Lazy loading of insertion_profile
-            if 'binding score' not in adata.uns:
-                adata.uns['binding score'] = {}
-            if 'footprints' not in adata.uns:
-                adata.uns['footprints'] = {}
+            if "binding score" not in adata.uns:
+                adata.uns["binding score"] = {}
+            if "footprints" not in adata.uns:
+                adata.uns["footprints"] = {}
 
             self.insertion_file = adata
             self.obs = self.insertion_file.obs
             self.obsm = self.insertion_file.obsm
             self.uns = self.insertion_file.uns
-            self.unique_string = self.insertion_file.uns['unique_string']
+            self.unique_string = self.insertion_file.uns["unique_string"]
             # Start to read in the binding score data and footprint data
             if attach:
-                for result_key, save in zip(['binding score', 'footprints', 'insertion'],
-                                             [self.bindingscoreadata, self.footprintsadata, self.insertionadata]):
+                for result_key, save in zip(
+                    ["binding score", "footprints", "insertion"],
+                    [self.bindingscoreadata, self.footprintsadata, self.insertionadata],
+                ):
                     remove_key = []
                     if result_key not in adata.uns:
                         continue
@@ -68,13 +75,12 @@ class PyPrinter():
                             try:
                                 # Only allow read when load.
                                 print("loading", save_key, p)
-                                save[save_key] = snap.read(p, backed='r')
+                                save[save_key] = snap.read(p, backed="r")
                                 success = True
                             except:
                                 pass
                         if not success:
                             remove_key.append(save_key)
-
 
                     # Update uns
                     a = adata.uns[result_key]
@@ -86,16 +92,16 @@ class PyPrinter():
         if genome is not None:
             bias_path = str(genome.fetch_bias())
             bias_bw_path = bias_path.replace(".h5", ".bw")
-            adata.uns['bias_path'] = bias_path
-            adata.uns['bias_bw'] = bias_bw_path
+            adata.uns["bias_path"] = bias_path
+            adata.uns["bias_bw"] = bias_bw_path
             # If it's the very first time you load this genome
 
             # Create a bias_bw
-            if not os.path.exists(adata.uns['bias_bw']):
-                print ("creating bias bigwig (runs for new bias h5 file)")
-                with h5py.File(adata.uns['bias_path'], 'r') as dct:
+            if not os.path.exists(adata.uns["bias_bw"]):
+                print("creating bias bigwig (runs for new bias h5 file)")
+                with h5py.File(adata.uns["bias_path"], "r") as dct:
                     precomputed_bias = {chrom: np.array(dct[chrom]) for chrom in dct.keys()}
-                    bw = pyBigWig.open(adata.uns['bias_bw'], 'w')
+                    bw = pyBigWig.open(adata.uns["bias_bw"], "w")
                     header = []
                     for chrom in precomputed_bias:
                         sig = precomputed_bias[chrom]
@@ -104,23 +110,29 @@ class PyPrinter():
                     bw.addHeader(header, maxZooms=0)
                     for chrom in tqdm(precomputed_bias):
                         sig = precomputed_bias[chrom]
-                        bw.addEntries(str(chrom),
-                                      np.arange(len(sig)),
-                                      values=sig.astype('float'), span=1, )
+                        bw.addEntries(
+                            str(chrom),
+                            np.arange(len(sig)),
+                            values=sig.astype("float"),
+                            span=1,
+                        )
                     bw.close()
 
             gff = genome.fetch_gff()
-            adata.uns['gff_db'] = str(gff)+".db"
+            adata.uns["gff_db"] = str(gff) + ".db"
             # First time create a gff_db to query
-            if not os.path.exists(adata.uns['gff_db']):
-                print ("Creating GFF database (Runs for new genome)")
+            if not os.path.exists(adata.uns["gff_db"]):
+                print("Creating GFF database (Runs for new genome)")
                 # Specifying the id_spec was necessary for gff files from NCBI.
-                self.gff_db = gffutils.create_db(gff, adata.uns['gff_db'],
-                                                 id_spec={'gene': 'gene_name', 'transcript': "transcript_id"},
-                                            merge_strategy="create_unique")
+                self.gff_db = gffutils.create_db(
+                    gff,
+                    adata.uns["gff_db"],
+                    id_spec={"gene": "gene_name", "transcript": "transcript_id"},
+                    merge_strategy="create_unique",
+                )
             else:
-                print ("Initializing GFF-db")
-                self.gff_db = gffutils.FeatureDB(adata.uns['gff_db'])
+                print("Initializing GFF-db")
+                self.gff_db = gffutils.FeatureDB(adata.uns["gff_db"])
 
         self.insertion_profile = insertion_profile
 
@@ -133,7 +145,6 @@ class PyPrinter():
         self.bindingScoreModel = {}
         return
 
-
     def remove_bindingscore(self, key: str):
         """
         Remove a binding score adata
@@ -144,13 +155,12 @@ class PyPrinter():
             key of the binding score adata to be removed
 
         """
-        a = self.insertion_file.uns['binding score']
-        if a[key] != 'None':
+        a = self.insertion_file.uns["binding score"]
+        if a[key] != "None":
             os.remove(a[key])
         del a[key]
-        self.insertion_file.uns['binding score'] = a
+        self.insertion_file.uns["binding score"] = a
         del self.bindingscoreadata[key]
-
 
     def remove_footprints(self, key: str):
         """
@@ -162,11 +172,11 @@ class PyPrinter():
             key of the footprints adata to be removed
 
         """
-        a = self.insertion_file.uns['footprints']
-        if a[key] != 'None':
+        a = self.insertion_file.uns["footprints"]
+        if a[key] != "None":
             os.remove(a[key])
         del a[key]
-        self.insertion_file.uns['footprints'] = a
+        self.insertion_file.uns["footprints"] = a
         del self.bindingscoreadata[key]
 
     def fetch_insertion_profile(self, set_global=False):
@@ -178,8 +188,12 @@ class PyPrinter():
         """
         # global insertion_profile
         if self.insertion_profile is None:
-            print ("Insertion profile from csr to csc")
-            indx = list(np.cumsum(self.insertion_file.uns['reference_sequences']['reference_seq_length']).astype('int'))
+            print("Insertion profile from csr to csc")
+            indx = list(
+                np.cumsum(
+                    self.insertion_file.uns["reference_sequences"]["reference_seq_length"]
+                ).astype("int")
+            )
             start = [0] + indx
             end = indx
             # self.insertion_profile = split_insertion_profile(
@@ -188,8 +202,8 @@ class PyPrinter():
             #     start,
             #     end, to_csc=True)
             self.insertion_profile = {}
-            for chrom in self.insertion_file.uns['reference_sequences']['reference_seq_name']:
-                self.insertion_profile[chrom] = self.insertion_file.obsm['insertion_%s' % chrom]
+            for chrom in self.insertion_file.uns["reference_sequences"]["reference_seq_name"]:
+                self.insertion_profile[chrom] = self.insertion_file.obsm["insertion_%s" % chrom]
                 gc.collect()
         if set_global:
             unique_string = self.unique_string
@@ -214,57 +228,61 @@ class PyPrinter():
             except:
                 pass
 
-
     def __repr__(self):
         print("head project")
-        print (self.insertion_file)
+        print(self.insertion_file)
         if len(self.bindingscoreadata) > 0:
-            print ("detected %d bindingscoreadata" % len(self.bindingscoreadata))
+            print("detected %d bindingscoreadata" % len(self.bindingscoreadata))
             for key in self.bindingscoreadata:
                 print("name", key)
                 response = str(self.bindingscoreadata[key])
                 response = response.split("\n")
                 if len(response) > 1:
                     a = response[-1].strip().split(": ")[1].split(", ")
-                    new_final = "    obsm: %d regions results in total: e.g. %s"  %(len(a), a[0])
+                    new_final = "    obsm: %d regions results in total: e.g. %s" % (
+                        len(a),
+                        a[0],
+                    )
                     response[-1] = new_final
-                    print ("\n".join(response))
+                    print("\n".join(response))
                 else:
-                    print (response)
+                    print(response)
 
         if len(self.footprintsadata) > 0:
-            print ("detected %d footprintsadata" % len(self.footprintsadata))
+            print("detected %d footprintsadata" % len(self.footprintsadata))
             for key in self.footprintsadata:
-                print ("name", key)
+                print("name", key)
                 response = str(self.footprintsadata[key])
                 response = response.split("\n")
                 if len(response) > 1:
                     a = response[-1].strip().split(": ")[1].split(", ")
-                    new_final = "    obsm: %d regions results in total: e.g. %s" % (len(a), a[0])
+                    new_final = "    obsm: %d regions results in total: e.g. %s" % (
+                        len(a),
+                        a[0],
+                    )
                     response[-1] = new_final
                     print("\n".join(response))
                 else:
-                    print (response)
+                    print(response)
         if len(self.insertionadata) > 0:
-            print ("detected %d insertionadata" % len(self.insertionadata))
+            print("detected %d insertionadata" % len(self.insertionadata))
             for key in self.insertionadata:
-                print ("name", key)
+                print("name", key)
                 response = str(self.insertionadata[key])
                 response = response.split("\n")
                 if len(response) > 1:
                     a = response[-1].strip().split(": ")[1].split(", ")
-                    new_final = "    obsm: %d regions results in total: e.g. %s" % (len(a), a[0])
+                    new_final = "    obsm: %d regions results in total: e.g. %s" % (
+                        len(a),
+                        a[0],
+                    )
                     response[-1] = new_final
                     print("\n".join(response))
                 else:
-                    print (response)
+                    print(response)
         return ""
 
-
-
-    def load_disp_model(self,
-                        path: str | Path | None = None,
-                        set_global=False):
+    def load_disp_model(self, path: str | Path | None = None, set_global=False):
         """
         Load the dispersion model from the path
         When path is None, the default pretrained model will be loaded
@@ -276,20 +294,17 @@ class PyPrinter():
 
         """
         from .datasets import pretrained_dispersion_model
+
         if path is None:
             path = pretrained_dispersion_model
         self.dispersionModel = loadDispModel(path)
         if set_global:
             globals()[self.unique_string + "_dispModels"] = self.dispersionModel
 
-    def set_global_bindingscore_model(self,
-                                      key: str):
+    def set_global_bindingscore_model(self, key: str):
         globals()[self.unique_string + "_bindingscoremodel"] = self.bindingScoreModel[key]
 
-    def load_bindingscore_model(self,
-                                key: str,
-                                path: str | Path | None = None,
-                                set_global=False):
+    def load_bindingscore_model(self, key: str, path: str | Path | None = None, set_global=False):
         """
         Load the binding score model from the path and save it to the adata file with the key
 
@@ -306,9 +321,7 @@ class PyPrinter():
             globals()[self.unique_string + "_bindingscoremodel"] = self.bindingScoreModel[key]
 
 
-def load_printer(path: str | Path,
-                 genome: genome.Genome,
-                 attach: bool = True):
+def load_printer(path: str | Path, genome: genome.Genome, attach: bool = True):
     """
     Load a printer from adata file
 
@@ -322,14 +335,18 @@ def load_printer(path: str | Path,
         whether to attach the footprintsadata / bindingscoreadata to the printer object
     """
     data = snap.read(path)
-    assert data.uns['genome'] == f'{genome=}'.split('=')[0], "Process data with %s, but now loading with %s" %(data.uns['genome'],
-                                                                                                               f'{genome=}'.split('=')[0])
+    assert (
+        data.uns["genome"] == f"{genome=}".split("=")[0]
+    ), "Process data with %s, but now loading with %s" % (
+        data.uns["genome"],
+        f"{genome=}".split("=")[0],
+    )
     printer = PyPrinter(
-        adata = data,
-        adata_path = path,
+        adata=data,
+        adata_path=path,
         insertion_profile=None,
         genome=genome,
-        attach=attach
+        attach=attach,
     )
     # register close automatically.
     atexit.register(printer.close)

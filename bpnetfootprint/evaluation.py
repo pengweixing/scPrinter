@@ -1,5 +1,6 @@
 import torch
 
+
 def batch_pearson_correlation(x, y):
 
     # Compute means along the batch dimension
@@ -15,6 +16,8 @@ def batch_pearson_correlation(x, y):
     variance_y = torch.sum((diff_y) ** 2, dim=-1)
 
     # Pearson correlation
-    correlation = covariance / (torch.sqrt(variance_x * variance_y) + 1e-8)  # Adding small value for numerical stability
+    correlation = covariance / (
+        torch.sqrt(variance_x * variance_y) + 1e-8
+    )  # Adding small value for numerical stability
 
     return correlation

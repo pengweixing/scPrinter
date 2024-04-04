@@ -1,16 +1,13 @@
-import torch
 import numpy as np
+import torch
 from tqdm.auto import tqdm
+
 from ..utils import regionparser
 
 
-
-def predict_footprints(model,
-                          printer,
-                          regions,
-                          modes=np.arange(2,101,1),
-                          verbose=False,
-                          batch_size=64):
+def predict_footprints(
+    model, printer, regions, modes=np.arange(2, 101, 1), verbose=False, batch_size=64
+):
     """
 
     Parameters
@@ -27,9 +24,13 @@ def predict_footprints(model,
     modes_all = list(np.arange(2, 101, 1))
     modes = [modes_all.index(x) for x in modes]
     regions = regionparser(regions, printer, model.dna_len)
-    X = torch.stack([printer.genome.fetch_onehot_seq(region[0],
-                                            region[1],
-                                            region[2]) for region in np.array(regions)], dim=0)
+    X = torch.stack(
+        [
+            printer.genome.fetch_onehot_seq(region[0], region[1], region[2])
+            for region in np.array(regions)
+        ],
+        dim=0,
+    )
 
     starts = np.arange(0, X.shape[0], batch_size)
     footprints = []
@@ -41,5 +42,3 @@ def predict_footprints(model,
         footprints.append(pred_footprint)
     footprints = np.concatenate(footprints, axis=0)
     return footprints
-
-

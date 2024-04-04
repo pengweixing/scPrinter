@@ -1,27 +1,29 @@
 # adapted from bpnetlite - attribution.py
 import gc
+from typing import Literal
 
-import numpy
-import numba
-import torch
-import pyBigWig
-import numpy as np
-from tqdm.auto import tqdm, trange
 import bioframe
-from captum.attr import IntegratedGradients, InputXGradient, Saliency
+import numba
+import numpy
+import numpy as np
+import pandas as pd
+import pyBigWig
+import pyfaidx
+import torch
+import torch.nn.functional as F
+from captum.attr import InputXGradient, IntegratedGradients, Saliency
+from shap import Explainer, GradientExplainer
+from tqdm.auto import tqdm, trange
+
+from ..utils import DNA_one_hot, zscore2pval, zscore2pval_torch
 from .captum_deeplift import DeepLiftShap
+from .ism import ism
 from .shap_deeplift import PyTorchDeep
 from .shap_expct_grad import PyTorchGradient
-from shap import GradientExplainer, Explainer
-from typing import Literal
-from .ism import ism
-import pandas as pd
-import pyfaidx
-from ..utils import DNA_one_hot, zscore2pval_torch, zscore2pval
-import torch.nn.functional as F
 
-params = 'void(int64, int64[:], int64[:], int32[:, :], int32[:,], '
-params += 'int32[:, :], float32[:, :, :], int32)'
+params = "void(int64, int64[:], int64[:], int32[:, :], int32[:,], "
+params += "int32[:, :], float32[:, :, :], int32)"
+
 
 def hypothetical_attributions(multipliers, inputs, baselines):
     """A function for aggregating contributions into hypothetical attributions.
@@ -67,9 +69,18 @@ def hypothetical_attributions(multipliers, inputs, baselines):
 
     return (projected_contribs,)
 
+
 @numba.jit(params, nopython=False)
-def _fast_shuffle(n_shuffles, chars, idxs, next_idxs, next_idxs_counts,
-                  counters, shuffled_sequences, random_state):
+def _fast_shuffle(
+    n_shuffles,
+    chars,
+    idxs,
+    next_idxs,
+    next_idxs_counts,
+    counters,
+    shuffled_sequences,
+    random_state,
+):
     """An internal function for fast shuffling using numba."""
 
     numpy.random.seed(random_state)
@@ -146,94 +157,114 @@ def dinucleotide_shuffle(sequence, n_shuffles=10, random_state=None):
         next_idxs[char][:n] = next_idxs_ + 1
         next_idxs_counts[char] = n
 
-    shuffled_sequences = numpy.zeros((n_shuffles, *sequence.shape),
-                                     dtype=numpy.float32)
+    shuffled_sequences = numpy.zeros((n_shuffles, *sequence.shape), dtype=numpy.float32)
     counters = numpy.zeros((n_shuffles, len(chars)), dtype=numpy.int32)
 
-    _fast_shuffle(n_shuffles, chars, idxs, next_idxs, next_idxs_counts,
-                  counters, shuffled_sequences, random_state)
+    _fast_shuffle(
+        n_shuffles,
+        chars,
+        idxs,
+        next_idxs,
+        next_idxs_counts,
+        counters,
+        shuffled_sequences,
+        random_state,
+    )
 
     shuffled_sequences = torch.from_numpy(shuffled_sequences).float()
     return shuffled_sequences
 
 
-def calculate_attributions(model, X,
-                           method = 'deeplift',
-                           n_shuffles=20,
-                           verbose=False,
-                           n_steps=10,
-                           references=None,
-                           amp=True):
+def calculate_attributions(
+    model,
+    X,
+    method="deeplift",
+    n_shuffles=20,
+    verbose=False,
+    n_steps=10,
+    references=None,
+    amp=True,
+):
 
-    batch_size = 32 if method == 'ism' else 1
+    batch_size = 32 if method == "ism" else 1
     attributions = []
     dev = next(model.parameters()).device
     for i in trange(0, len(X), batch_size, disable=not verbose, dynamic_ncols=True):
-        _X = X[i:i+batch_size].float()
-        if method != 'ism':
+        _X = X[i : i + batch_size].float()
+        if method != "ism":
             if references is None:
-                _references = torch.cat([dinucleotide_shuffle(xx, n_shuffles=n_shuffles).to(dev) for xx in _X], dim=0)
+                _references = torch.cat(
+                    [dinucleotide_shuffle(xx, n_shuffles=n_shuffles).to(dev) for xx in _X],
+                    dim=0,
+                )
                 _references = _references.type(_X.dtype)
             else:
                 _references = references.type(_X.dtype).to(dev)
         _X = _X.to(dev)
-        if 'deeplift' in method:
+        if "deeplift" in method:
             dl = DeepLiftShap(model)
             model.zero_grad()
-            attr,delta = dl.attribute(_X, _references,
-                                custom_attribution_func=hypothetical_attributions if "hypo" in method else None,
-                                additional_forward_args=(None),
-                                return_convergence_delta=True,
-                                )
-            if 'hypo' not in method:
+            attr, delta = dl.attribute(
+                _X,
+                _references,
+                custom_attribution_func=(hypothetical_attributions if "hypo" in method else None),
+                additional_forward_args=(None),
+                return_convergence_delta=True,
+            )
+            if "hypo" not in method:
                 if torch.max(torch.abs(delta)[0]) > 1e-2:
-                    print (delta)
-        elif 'inte_grad' in method:
+                    print(delta)
+        elif "inte_grad" in method:
             dl = IntegratedGradients(model)
             model.zero_grad()
             _X = torch.cat([_X] * n_shuffles, dim=0)
-            attrs, delta = dl.attribute(_X,
-                                        baselines=_references,
-                                        internal_batch_size=50,
-                                        n_steps=n_steps,
-                                        return_convergence_delta=True)
+            attrs, delta = dl.attribute(
+                _X,
+                baselines=_references,
+                internal_batch_size=50,
+                n_steps=n_steps,
+                return_convergence_delta=True,
+            )
             if torch.max(torch.abs(delta)[0]) > 1e-2:
-                print (delta)
+                print(delta)
 
             attr = attrs.mean(dim=0, keepdims=True)
 
-        elif 'shap' in method:
+        elif "shap" in method:
             dl = PyTorchDeep(model, _references)
             dl.amp = amp
-            attr, deltas = dl.shap_values(_X, check_additivity=False,
-                                        custom_attribution_func=hypothetical_attributions if "hypo" in method else None)
+            attr, deltas = dl.shap_values(
+                _X,
+                check_additivity=False,
+                custom_attribution_func=(hypothetical_attributions if "hypo" in method else None),
+            )
             if "hypo" not in method:
                 # print (deltas)
                 if torch.max(torch.abs(deltas[0])) > 1e-2:
-                    print (deltas)
-        elif 'IxG' in method:
+                    print(deltas)
+        elif "IxG" in method:
             model.zero_grad()
             _X.requires_grad = True
             with torch.autograd.set_grad_enabled(True):
                 output = model(_X)
                 attr = torch.autograd.grad(output, _X)[0]
             # print (attr.shape)
-            if 'norm' in method:
-                norm_factor = (attr.sum(dim=1, keepdims=True) - attr)/3
+            if "norm" in method:
+                norm_factor = (attr.sum(dim=1, keepdims=True) - attr) / 3
                 attr = attr - norm_factor
-            if 'abs' in method:
+            if "abs" in method:
                 attr = torch.abs(attr)
 
-        elif 'ism' in method:
+        elif "ism" in method:
             attr = ism(model, _X)
 
-        elif 'expct_grad' in method:
+        elif "expct_grad" in method:
             # dl = GradientExplainer(model, _references)
             dl = PyTorchGradient(model, _references, correction=True)
             attr = dl.shap_values(_X, nsamples=500)
             # print (attr.shape)
             # attr -= np.mean(attr, axis=1, keepdims=True)
-        elif 'other' in method:
+        elif "other" in method:
             dl = Explainer(model)
             attr = dl(_X)
         else:
@@ -244,29 +275,35 @@ def calculate_attributions(model, X,
         if len(attr.shape) == 2:
             attr = attr[None]
 
-        attributions.append(attr.cpu().detach() if type(attr) is torch.Tensor else torch.from_numpy(attr))
+        attributions.append(
+            attr.cpu().detach() if type(attr) is torch.Tensor else torch.from_numpy(attr)
+        )
 
     attributions = torch.cat(attributions)
     return attributions
 
+
 @torch.no_grad()
-def projected_shap(attributions, seqs, bs=64, device='cpu'):
+def projected_shap(attributions, seqs, bs=64, device="cpu"):
     attributions_projected = []
     for i in range(0, len(attributions), bs):
-        _attributions = attributions[i:i + bs].to(device)
-        _seqs = seqs[i:i + bs].to(device)
+        _attributions = attributions[i : i + bs].to(device)
+        _seqs = seqs[i : i + bs].to(device)
         _attributions_projected = (_attributions * _seqs).sum(dim=1)
         attributions_projected.append(_attributions_projected.detach().cpu().numpy())
     attributions_projected = np.concatenate(attributions_projected)
     return attributions_projected
 
-def attribution_to_bigwig(attributions,
-                          regions,
-                          chrom_size,
-                           res=1,
-                          mode='average',
-                          output='attribution.bigwig',
-                          verbose=True):
+
+def attribution_to_bigwig(
+    attributions,
+    regions,
+    chrom_size,
+    res=1,
+    mode="average",
+    output="attribution.bigwig",
+    verbose=True,
+):
     """
 
 
@@ -283,58 +320,56 @@ def attribution_to_bigwig(attributions,
 
     """
     regions = regions.copy()
-    regions.columns = ['chrom', 'start', 'end'] + list(regions.columns[3:])
+    regions.columns = ["chrom", "start", "end"] + list(regions.columns[3:])
 
-    bw = pyBigWig.open(output, 'w')
-
+    bw = pyBigWig.open(output, "w")
 
     regions = bioframe.cluster(regions)
-    regions['fake_id'] = np.arange(len(regions))
-    regions = regions.sort_values(by=['chrom', 'start', 'end'])
+    regions["fake_id"] = np.arange(len(regions))
+    regions = regions.sort_values(by=["chrom", "start", "end"])
     # attributions = attributions[np.array(regions['fake_id'])]
-    cluster_stats = regions.drop_duplicates('cluster')
-    cluster_stats = cluster_stats.sort_values(by=['chrom', 'start', 'end'])
-    order_of_cluster = np.array(cluster_stats['cluster'])
+    cluster_stats = regions.drop_duplicates("cluster")
+    cluster_stats = cluster_stats.sort_values(by=["chrom", "start", "end"])
+    order_of_cluster = np.array(cluster_stats["cluster"])
     # print (regions)
-    aa = regions.groupby('cluster')
+    aa = regions.groupby("cluster")
     # print (aa)
     # clusters = {cluster: group for cluster, group in tqdm(aa)}
 
     header = []
-    chrom_order = cluster_stats['chrom'].unique()
+    chrom_order = cluster_stats["chrom"].unique()
     for chrom in chrom_order:
         header.append((chrom, int(chrom_size[chrom])))
     bw.addHeader(header, maxZooms=10)
 
-    stuff_to_add= {'chroms':None,
-                   'points': [],
-                   'values': []}
-
+    stuff_to_add = {"chroms": None, "points": [], "values": []}
 
     for cluster in tqdm(order_of_cluster, dynamic_ncols=True, disable=not verbose):
         # region_temp = clusters[cluster]
         region_temp = aa.get_group(cluster)
-        chroms, starts, ends = np.array(region_temp['chrom']), region_temp['start'], region_temp['end']
-        mask = np.array(region_temp['fake_id'])
+        chroms, starts, ends = (
+            np.array(region_temp["chrom"]),
+            region_temp["start"],
+            region_temp["end"],
+        )
+        mask = np.array(region_temp["fake_id"])
         attributions_chrom = attributions[mask]
 
-        if str(chroms[0]) != stuff_to_add['chroms'] and stuff_to_add['chroms'] is not None:
+        if str(chroms[0]) != stuff_to_add["chroms"] and stuff_to_add["chroms"] is not None:
             # print("writing")
-            chrom = stuff_to_add['chroms']
-            points = np.concatenate(stuff_to_add['points'])
-            values = np.concatenate(stuff_to_add['values'])
+            chrom = stuff_to_add["chroms"]
+            points = np.concatenate(stuff_to_add["points"])
+            values = np.concatenate(stuff_to_add["values"])
 
             bw.addEntries(chrom, points, values=values, span=res)
-            stuff_to_add = {'chroms': None,
-                            'points': [],
-                            'values': []}
+            stuff_to_add = {"chroms": None, "points": [], "values": []}
 
         if len(mask) == 1:
             chrom = np.array(chroms)[0]
             points = np.arange(attributions_chrom[0].shape[-1]) * res + np.array(starts)[0]
-            stuff_to_add['chroms']  = str(chrom)
-            stuff_to_add['points'].append(points)
-            stuff_to_add['values'].append(attributions_chrom[0].astype('float'))
+            stuff_to_add["chroms"] = str(chrom)
+            stuff_to_add["points"].append(points)
+            stuff_to_add["values"].append(attributions_chrom[0].astype("float"))
             # bw.addEntries(str(chrom),
             #               points,
             #               values=attributions_chrom[0].astype('float'), span=res,)
@@ -346,18 +381,20 @@ def attribution_to_bigwig(attributions,
         importance_track = np.full((len(region_temp), size), np.nan)
         ct = 0
         for start, end, attribution in zip(starts, ends, attributions_chrom):
-            if end-start != attribution.shape[0] * res:
-                print ("shape incompatible", start, end, attribution.shape)
-            importance_track[ct, (start-start_point) // res:(end-start_point) // res] = attribution
+            if end - start != attribution.shape[0] * res:
+                print("shape incompatible", start, end, attribution.shape)
+            importance_track[ct, (start - start_point) // res : (end - start_point) // res] = (
+                attribution
+            )
             ct += 1
 
-        if mode == 'average':
+        if mode == "average":
             importance_track = np.nanmean(importance_track, axis=0)
-        elif mode == 'max':
+        elif mode == "max":
             importance_track = np.nanmax(importance_track, axis=0)
-        elif mode == 'min':
+        elif mode == "min":
             importance_track = np.nanmin(importance_track, axis=0)
-        elif mode == 'sum':
+        elif mode == "sum":
             importance_track = np.nansum(importance_track, axis=0)
 
         indx = ~np.isnan(importance_track)
@@ -366,23 +403,25 @@ def attribution_to_bigwig(attributions,
         # bw.addEntries(str(chrom),
         #               points,
         #               values=importance_track[indx], span=res, )
-        stuff_to_add['chroms'] = str(chrom)
-        stuff_to_add['points'].append(points)
-        stuff_to_add['values'].append(importance_track[indx])
+        stuff_to_add["chroms"] = str(chrom)
+        stuff_to_add["points"].append(points)
+        stuff_to_add["values"].append(importance_track[indx])
 
     # print("writing")
-    chrom = stuff_to_add['chroms']
-    points = np.concatenate(stuff_to_add['points'])
-    values = np.concatenate(stuff_to_add['values'])
+    chrom = stuff_to_add["chroms"]
+    points = np.concatenate(stuff_to_add["points"])
+    values = np.concatenate(stuff_to_add["values"])
 
     bw.addEntries(chrom, points, values=values, span=res)
 
     bw.close()
 
+
 def count_delta(alt, ref):
     alt = alt[1].detach().cpu().numpy()
     ref = ref[1].detach().cpu().numpy()
     return float(alt - ref)
+
 
 def footprint_delta(alt, ref):
     alt = alt[0].reshape((1, -1))
@@ -395,6 +434,7 @@ def footprint_delta(alt, ref):
     ref = F.relu(ref - 0.31)
     return float(alt.sum() - ref.sum())
 
+
 def tf_footprint_delta(alt, ref):
     alt = alt[0][:, :30].reshape((1, -1))
     ref = ref[0][:, :30].reshape((1, -1))
@@ -406,43 +446,38 @@ def tf_footprint_delta(alt, ref):
     ref = F.relu(ref - 0.31)
     return float(alt.sum() - ref.sum())
 
+
 @torch.no_grad()
-def vcf_attribution(vcf_path,
-                    seq_len,
-                    fasta,
-                    model,
-                    delta_func=None):
+def vcf_attribution(vcf_path, seq_len, fasta, model, delta_func=None):
     ref_seq = pyfaidx.Fasta(fasta)
-    vcf = pd.read_csv(vcf_path, sep='\t', header=None)
-    vcf.columns = ['chrom', 'pos', 'name', 'REF', 'ALT', 'sth1', 'sth2']
-    kept = vcf['REF'].isin(['A', 'C', 'T', 'G']) & vcf['ALT'].isin(['A', 'C', 'T', 'G'])
+    vcf = pd.read_csv(vcf_path, sep="\t", header=None)
+    vcf.columns = ["chrom", "pos", "name", "REF", "ALT", "sth1", "sth2"]
+    kept = vcf["REF"].isin(["A", "C", "T", "G"]) & vcf["ALT"].isin(["A", "C", "T", "G"])
     vcf = vcf.loc[kept]
-    vcf['start'] = vcf['pos'] - 1 - seq_len // 2
-    vcf['end'] = vcf['pos'] - 1 + seq_len // 2
+    vcf["start"] = vcf["pos"] - 1 - seq_len // 2
+    vcf["end"] = vcf["pos"] - 1 + seq_len // 2
     center = seq_len // 2
     dev = next(model.parameters()).device
     deltas = []
     for i in trange(len(vcf)):
-        chrom, start, end = vcf.iloc[i][['chrom', 'start', 'end']]
-        seq = ref_seq[chrom][start:
-                                end].seq.upper()
-        if seq[center] != vcf.iloc[i]['REF']:
-            print (seq[center-1:center+2], vcf.iloc[i]['REF'])
+        chrom, start, end = vcf.iloc[i][["chrom", "start", "end"]]
+        seq = ref_seq[chrom][start:end].seq.upper()
+        if seq[center] != vcf.iloc[i]["REF"]:
+            print(seq[center - 1 : center + 2], vcf.iloc[i]["REF"])
             raise ValueError
         # else:
-            # print(seq[center - 1:center + 1], vcf.iloc[i]['REF'])
+        # print(seq[center - 1:center + 1], vcf.iloc[i]['REF'])
 
         _X = DNA_one_hot(seq)
         _X = _X[None]
         _ref = model(_X.float().to(dev))
         seq = list(seq)
-        seq[center] = vcf.iloc[i]['ALT']
-        seq = ''.join(seq)
+        seq[center] = vcf.iloc[i]["ALT"]
+        seq = "".join(seq)
         _X = DNA_one_hot(seq)
         _X = _X[None]
         _alt = model(_X.float().to(dev))
         delta = delta_func(_alt, _ref)
         deltas.append(delta)
-    vcf['deltas'] = deltas
+    vcf["deltas"] = deltas
     return vcf
-

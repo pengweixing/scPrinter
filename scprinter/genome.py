@@ -1,24 +1,27 @@
 # motivated by snapatac2.genome
 from __future__ import annotations
+
 import os.path
-from .datasets import datasets, giverightstothegroup
-from .utils import get_stats_for_genome, DNA_one_hot
-from pooch import Decompress, Untar
 from pathlib import Path
-from pyfaidx import Fasta
+
 import torch
+from pooch import Decompress, Untar
+from pyfaidx import Fasta
 
-
+from .datasets import datasets, giverightstothegroup
+from .utils import DNA_one_hot, get_stats_for_genome
 
 
 class Genome:
-    def __init__(self,
-                 chrom_sizes: dict | None = None,
-                 gff_file: str | Path = '',
-                 fa_file: str | Path = '',
-                 bias_file: str | Path = '',
-                 blacklist_file: str | Path | None = None,
-                 bg: tuple | None = None):
+    def __init__(
+        self,
+        chrom_sizes: dict | None = None,
+        gff_file: str | Path = "",
+        fa_file: str | Path = "",
+        bias_file: str | Path = "",
+        blacklist_file: str | Path | None = None,
+        bg: tuple | None = None,
+    ):
         """
         Genome class
         It keep records of all the genome specific information
@@ -68,7 +71,13 @@ class Genome:
         if self.blacklist_file is None:
             raise ValueError("No blacklist file provided")
         if not os.path.exists(self.fa_file):
-            return str(datasets().fetch(self.blacklist_file, processor = giverightstothegroup, progressbar=True,))
+            return str(
+                datasets().fetch(
+                    self.blacklist_file,
+                    processor=giverightstothegroup,
+                    progressbar=True,
+                )
+            )
         else:
             return self.blacklist_file
 
@@ -81,7 +90,9 @@ class Genome:
         str of the path to the local gff file
         """
         if not os.path.exists(self.gff_file):
-            return str(datasets().fetch(self.gff_file, progressbar=True, processor=giverightstothegroup))
+            return str(
+                datasets().fetch(self.gff_file, progressbar=True, processor=giverightstothegroup)
+            )
         else:
             return self.gff_file
 
@@ -94,7 +105,13 @@ class Genome:
         str of the path to the local fasta file
         """
         if not os.path.exists(self.fa_file):
-            return str(datasets().fetch(self.fa_file, processor = giverightstothegroup, progressbar=True,))
+            return str(
+                datasets().fetch(
+                    self.fa_file,
+                    processor=giverightstothegroup,
+                    progressbar=True,
+                )
+            )
         else:
             return self.fa_file
 
@@ -115,7 +132,7 @@ class Genome:
         -------
         str of the sequence
         """
-        if not hasattr(self, 'fasta'):
+        if not hasattr(self, "fasta"):
             self.fasta = Fasta(self.fetch_fa())
 
         return self.fasta[chrom][start:end].seq
@@ -137,7 +154,7 @@ class Genome:
         -------
         np.array of the onehot encoded sequence
         """
-        if not hasattr(self, 'fasta'):
+        if not hasattr(self, "fasta"):
             self.fasta = Fasta(self.fetch_fa())
 
         return DNA_one_hot(self.fasta[chrom][start:end].seq.upper())
@@ -151,7 +168,11 @@ class Genome:
         str of the path to the local bias file
         """
         if not os.path.exists(self.bias_file):
-            file = datasets().fetch(self.bias_file, processor = giverightstothegroup, progressbar=True,)
+            file = datasets().fetch(
+                self.bias_file,
+                processor=giverightstothegroup,
+                progressbar=True,
+            )
             for f in file:
                 if ".h5" in f:
                     return str(f)
@@ -183,13 +204,13 @@ GRCh38 = Genome(
         "chr21": 46709983,
         "chr22": 50818468,
         "chrX": 156040895,
-        "chrY": 57227415
+        "chrY": 57227415,
     },
     "gencode_v41_GRCh38.gff3.gz",
     "gencode_v41_GRCh38.fa.gz",
     "hg38Tn5Bias.tar.gz",
     "hg38-blacklist.v2.bed.gz",
-    (0.29518279760588795, 0.20390602956403897, 0.20478356895235347, 0.2961276038777196)
+    (0.29518279760588795, 0.20390602956403897, 0.20478356895235347, 0.2961276038777196),
 )
 
 hg38 = GRCh38
@@ -223,11 +244,7 @@ GRCm38 = Genome(
     "gencode_vM25_GRCm38.fa.gz",
     "mm10Tn5Bias.tar.gz",
     "mm10-blacklist.v2.bed.gz",
-    (0.29149763779592625,
-     0.2083275235867118,
-     0.20834346947899296,
-     0.291831369138369)
+    (0.29149763779592625, 0.2083275235867118, 0.20834346947899296, 0.291831369138369),
 )
 
 mm10 = GRCm38
-

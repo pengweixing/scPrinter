@@ -2,7 +2,7 @@ numpy
 h5py
 pandas
 scipy
-# pytorch>=1.7.0
+pytorch>=1.7.0
 pybedtools
 pyranges
 biopython

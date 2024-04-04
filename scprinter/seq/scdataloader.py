@@ -1,18 +1,20 @@
+import multiprocessing as mpl
 import os
 import sys
+from functools import partial
 
 import numpy as np
-import torch
 import pandas
-import pyfaidx
 import pyBigWig
-from tqdm.auto import tqdm
+import pyfaidx
+import torch
 from torch.utils.data import ConcatDataset
-from ..utils import DNA_one_hot
-from tqdm.auto import trange, tqdm
+from tqdm.auto import tqdm, trange
 from tqdm.contrib.concurrent import process_map
-from functools import partial
-import multiprocessing as mpl
+
+from ..utils import DNA_one_hot
+
+
 def fetch_cov(summit, group2idx):
     global global_insertion_dict
     chrom, start, end = summit
@@ -21,6 +23,7 @@ def fetch_cov(summit, group2idx):
     for j in range(len(group2idx)):
         coverages[j] = signal[group2idx[j]].sum()
     return coverages
+
 
 class scChromBPDataset(torch.utils.data.Dataset):
     """A general Data generator for training and evaluation.
@@ -41,24 +44,26 @@ class scChromBPDataset(torch.utils.data.Dataset):
         Length of the output signal track. The signal sequence will be centered at the summit.
     """
 
-    def __init__(self,
-                 insertion_dict,
-                 bias,
-                 group2idx,
-                 ref_seq,
-                 summits,
-                 DNA_window,
-                 signal_window,
-                 max_jitter,
-                 cached=False,
-                 lazy_cache=False,
-                 reverse_compliment=False,
-                 device='cpu',
-                 initialize=True,
-                 coverages=None,
-                 data_augmentation=False,
-                 mode = 'uniform',
-                 cell_sample=10):
+    def __init__(
+        self,
+        insertion_dict,
+        bias,
+        group2idx,
+        ref_seq,
+        summits,
+        DNA_window,
+        signal_window,
+        max_jitter,
+        cached=False,
+        lazy_cache=False,
+        reverse_compliment=False,
+        device="cpu",
+        initialize=True,
+        coverages=None,
+        data_augmentation=False,
+        mode="uniform",
+        cell_sample=10,
+    ):
         global global_insertion_dict
         global_insertion_dict = insertion_dict
         # self.insertion_dict = insertion_dict
@@ -86,11 +91,15 @@ class scChromBPDataset(torch.utils.data.Dataset):
 
         if initialize:
             print("input summits", len(summits))
-            summits_valid = np.array([self.validate_loci(chrom,
-                                                         summit) for
-                                      chrom, summit in
-                                      zip(tqdm(summits.iloc[:, 0], desc='validating loci'),
-                                          summits.iloc[:, 1])])
+            summits_valid = np.array(
+                [
+                    self.validate_loci(chrom, summit)
+                    for chrom, summit in zip(
+                        tqdm(summits.iloc[:, 0], desc="validating loci"),
+                        summits.iloc[:, 1],
+                    )
+                ]
+            )
             print("valid summits after trimming edges", np.sum(summits_valid))
             self.summits = summits.loc[summits_valid]
             self.summits = self.summits.loc[summits_valid]
@@ -101,34 +110,55 @@ class scChromBPDataset(torch.utils.data.Dataset):
             self.group_idx = self.idx % len(self.group2idx)
 
             func = partial(fetch_cov, group2idx=self.group2idx)
-            regions = [self.summits[:, 0], self.summits[:, 1] - self.signal_flank - self.max_jitter,
-            self.summits[:, 1] + self.signal_flank + self.max_jitter]
+            regions = [
+                self.summits[:, 0],
+                self.summits[:, 1] - self.signal_flank - self.max_jitter,
+                self.summits[:, 1] + self.signal_flank + self.max_jitter,
+            ]
             regions = np.array(regions).T
-            print (regions, regions.shape)
+            print(regions, regions.shape)
             regions[:, 1] = regions[:, 1].astype(int)
             regions[:, 2] = regions[:, 2].astype(int)
             if coverages is None:
-                coverages = process_map(func, regions, max_workers=min(mpl.cpu_count(), 128),
-                                        chunksize=100,
-                                        desc='fetching coverages')
+                coverages = process_map(
+                    func,
+                    regions,
+                    max_workers=min(mpl.cpu_count(), 128),
+                    chunksize=100,
+                    desc="fetching coverages",
+                )
                 self.coverages = np.array(coverages).reshape((-1))
             else:
                 self.coverages = coverages
-                assert len(self.coverages) == len(self.summits) * len(self.group2idx), "coverages length mismatch"
+                assert len(self.coverages) == len(self.summits) * len(
+                    self.group2idx
+                ), "coverages length mismatch"
 
-            print ("coverages", self.coverages.shape, self.coverages.min(), self.coverages.max())
+            print(
+                "coverages",
+                self.coverages.shape,
+                self.coverages.min(),
+                self.coverages.max(),
+            )
             self.normalized_coverages = self.coverages.reshape((-1, len(self.group2idx)))
-            self.normalized_coverages = np.log1p(self.normalized_coverages / self.normalized_coverages.mean(axis=1)[:, None])
-            print ("normalized coverages", self.normalized_coverages.shape,
-                   self.normalized_coverages.min(),
-                   self.normalized_coverages.max())
-            self.normalized_coverages = torch.from_numpy(self.normalized_coverages.reshape((-1))).float()
+            self.normalized_coverages = np.log1p(
+                self.normalized_coverages / self.normalized_coverages.mean(axis=1)[:, None]
+            )
+            print(
+                "normalized coverages",
+                self.normalized_coverages.shape,
+                self.normalized_coverages.min(),
+                self.normalized_coverages.max(),
+            )
+            self.normalized_coverages = torch.from_numpy(
+                self.normalized_coverages.reshape((-1))
+            ).float()
             self.mask = self.coverages > 10
             pos = self.idx[self.mask]
             neg = self.idx[~self.mask]
             if data_augmentation:
                 ratio = 0.1
-                sampled_neg = np.random.permutation(neg)[:int(len(pos) * ratio)]
+                sampled_neg = np.random.permutation(neg)[: int(len(pos) * ratio)]
                 self.idx = np.concatenate([pos, sampled_neg])
                 self.idx = self.idx
             else:
@@ -136,7 +166,7 @@ class scChromBPDataset(torch.utils.data.Dataset):
 
             self.summit_idx = self.summit_idx[self.idx]
             self.group_idx = self.group_idx[self.idx]
-            print ("filtering from ",len(self.mask), "to ", len(self.idx))
+            print("filtering from ", len(self.mask), "to ", len(self.idx))
             if lazy_cache:
                 self.cache_seqs = None
                 self.cache_bias = None
@@ -145,14 +175,13 @@ class scChromBPDataset(torch.utils.data.Dataset):
             if self.cached:
                 self.cache_seqs = []
                 self.cache_bias = []
-                for chrom, summit in tqdm(self.summits[:, :2], desc='Caching sequences'):
+                for chrom, summit in tqdm(self.summits[:, :2], desc="Caching sequences"):
                     DNA, bias = self.fetch_loci_dna_bias(chrom, summit)
                     self.cache_seqs.append(DNA)
                     self.cache_bias.append(bias)
 
                 self.cache_seqs = torch.stack(self.cache_seqs, dim=0)
                 self.cache_bias = torch.stack(self.cache_bias, dim=0)
-
 
     def cache(self, force=False):
         if self.cached and not force:
@@ -162,7 +191,7 @@ class scChromBPDataset(torch.utils.data.Dataset):
         self.cached = True
         self.cache_seqs = []
         self.cache_bias = []
-        for chrom, summit in tqdm(self.summits, desc='Caching sequences'):
+        for chrom, summit in tqdm(self.summits, desc="Caching sequences"):
             DNA, bias = self.fetch_loci_dna_bias(chrom, summit)
             self.cache_seqs.append(DNA)
             self.cache_bias.append(bias)
@@ -170,15 +199,14 @@ class scChromBPDataset(torch.utils.data.Dataset):
         self.cache_seqs = torch.stack(self.cache_seqs, dim=0)
         self.cache_bias = torch.stack(self.cache_bias, dim=0)
 
-
     def to(self, device):
         self.device = device
         return self
 
     def __len__(self):
-        if self.mode == 'uniform':
+        if self.mode == "uniform":
             return len(self.idx)
-        elif self.mode == 'peak':
+        elif self.mode == "peak":
             return len(self.summits)
         else:
             raise ValueError("mode not recognized")
@@ -186,9 +214,14 @@ class scChromBPDataset(torch.utils.data.Dataset):
     def apply_jitter(self, dna, signal):
         if self.max_jitter == 0:
             return dna, signal
-        jitter = 0 if self.max_jitter == 0 else np.random.default_rng().integers(self.max_jitter * 2)
+        jitter = (
+            0 if self.max_jitter == 0 else np.random.default_rng().integers(self.max_jitter * 2)
+        )
 
-        return dna[:, jitter:jitter + self.DNA_window], signal[:, jitter:jitter + self.signal_window]
+        return (
+            dna[:, jitter : jitter + self.DNA_window],
+            signal[:, jitter : jitter + self.signal_window],
+        )
 
     def getitem_by_summit_group(self, summit_idx, group_idx):
         # DNA first
@@ -277,19 +310,26 @@ class scChromBPDataset(torch.utils.data.Dataset):
             signals = signals[0]
 
         dnas = dnas.float()
-        pos_mask = torch.as_tensor(self.mask[summit_idx * len(self.group2idx) + group_idx], dtype=torch.bool)
-        return (dnas.float(), signals, torch.as_tensor(group_idx).long(), torch.as_tensor(summit_idx).long(), pos_mask)
-
+        pos_mask = torch.as_tensor(
+            self.mask[summit_idx * len(self.group2idx) + group_idx], dtype=torch.bool
+        )
+        return (
+            dnas.float(),
+            signals,
+            torch.as_tensor(group_idx).long(),
+            torch.as_tensor(summit_idx).long(),
+            pos_mask,
+        )
 
     def __getitem__(self, idx):
 
-        if self.mode == 'uniform':
+        if self.mode == "uniform":
             summit_idx = self.summit_idx[idx]
             group_idx = self.group_idx[idx]
             X, y, cell, peak, _ = self.getitem_by_summit_group(summit_idx, group_idx)
             coverage = self.normalized_coverages[self.idx[idx]]
             return X, y, cell, peak, coverage
-        elif self.mode == 'peak':
+        elif self.mode == "peak":
             summit_idx = idx
             rng = np.random.default_rng()
             group_idx = rng.integers(low=0, high=len(self.group2idx), size=self.cell_sample)
@@ -301,7 +341,6 @@ class scChromBPDataset(torch.utils.data.Dataset):
             coverage = self.normalized_coverages[summit_idx * len(self.group2idx) + group_idx]
             return X, y, cell, peak, pos_mask, coverage
 
-
     def validate_loci(self, chrom, summit):
         if summit - self.max_flank - self.max_jitter < 0:
             return False
@@ -310,15 +349,12 @@ class scChromBPDataset(torch.utils.data.Dataset):
 
         return True
 
-
-    def group_signal(self, signal, group=slice(None), device='cpu'):
-        signal = np.array(signal[self.group2idx[group]].sum(axis=0)).astype('float32')
-        signal = torch.tensor(signal,
-                              dtype=torch.float32, device=device)
+    def group_signal(self, signal, group=slice(None), device="cpu"):
+        signal = np.array(signal[self.group2idx[group]].sum(axis=0)).astype("float32")
+        signal = torch.tensor(signal, dtype=torch.float32, device=device)
         return signal
 
-    def fetch_loci_dna_bias(self, chrom, summit,
-                   device='cpu'):
+    def fetch_loci_dna_bias(self, chrom, summit, device="cpu"):
         """Fetch the DNA sequence and the signal track for a given locus.
         Parameters
         ----------
@@ -334,23 +370,38 @@ class scChromBPDataset(torch.utils.data.Dataset):
         tuple
             A tuple of two torch.Tensor objects: DNA sequence and signal track.
         """
-        DNA = DNA_one_hot(self.ref_seq[chrom][summit - self.DNA_flank - self.max_jitter:
-                                              summit + self.DNA_flank + self.max_jitter].seq.upper(),
-                          device=device)
-        signal = np.nan_to_num(self.bias.values(
-            chrom, summit - self.signal_flank - self.max_jitter,
-            summit + self.signal_flank + self.max_jitter,
-            numpy=True), nan=0.0)[None]
-        signal = torch.tensor(signal,
-                              dtype=torch.float32, device=device)
+        DNA = DNA_one_hot(
+            self.ref_seq[chrom][
+                summit
+                - self.DNA_flank
+                - self.max_jitter : summit
+                + self.DNA_flank
+                + self.max_jitter
+            ].seq.upper(),
+            device=device,
+        )
+        signal = np.nan_to_num(
+            self.bias.values(
+                chrom,
+                summit - self.signal_flank - self.max_jitter,
+                summit + self.signal_flank + self.max_jitter,
+                numpy=True,
+            ),
+            nan=0.0,
+        )[None]
+        signal = torch.tensor(signal, dtype=torch.float32, device=device)
 
         return DNA, signal
 
-    def fetch_loci_signal(self, chrom, summit,
-                          device='cpu'
-                          ):
+    def fetch_loci_signal(self, chrom, summit, device="cpu"):
         global global_insertion_dict
         # still sparse, and is at single cell resolution
-        signal = global_insertion_dict[chrom][:, summit - self.signal_flank - self.max_jitter:
-                                               summit + self.signal_flank + self.max_jitter]
+        signal = global_insertion_dict[chrom][
+            :,
+            summit
+            - self.signal_flank
+            - self.max_jitter : summit
+            + self.signal_flank
+            + self.max_jitter,
+        ]
         return signal

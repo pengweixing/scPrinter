@@ -1,0 +1,43 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling", "hatch-vcs"]
+
+[project]
+name = "scprinter"
+dynamic = ["version"]
+description = "Multiscale footprints"
+authors = [{ name = "Your Name", email = "you@example.com" }] # Add your details
+license = { file = "LICENSE" } # Ensure you have a LICENSE file in your project root
+readme = "README.md" # Ensure you have a README.md file or change to the correct file
+keywords = [] # Add some keywords related to your project
+requires-python = ">=3.8"
+urls.Source = "https://github.com/ruochiz/scPrinter"
+urls.Home-page = "https://github.com/ruochiz/scPrinter"
+dependencies = [
+    "numpy",
+    "h5py",
+    "pandas",
+    "scipy",
+    "bioframe",
+    "torch",
+    "pybedtools",
+    "pyranges",
+    "biopython",
+    "MOODS-python",
+    "snapATAC2",
+    "plotly",
+    "dna_features_viewer",
+    "scanpy",
+    "pyBigWig",
+    "gffutils",
+]
+
+[tool.black]
+line-length = 100
+
+[tool.isort]
+line_length = 100
+profile = "black"
+
+[tool.hatch.version]
+source = "vcs"

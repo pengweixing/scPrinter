@@ -141,6 +141,7 @@ def import_fragments(pathToFrags: str | list[str] | Path | list[Path],
                                    shift_left=extra_plus_shift,
                                    shift_right=extra_minus_shift,
                                    **kwargs)
+        snap.metrics.tsse(data, genome.fetch_gff())
         frags_to_insertions(data, split=True)
     else:
         # with multiple fragments, store them in memory and concat

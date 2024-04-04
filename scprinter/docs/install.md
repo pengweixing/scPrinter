@@ -7,8 +7,9 @@ For beta testing, you can use it on fasrc following this procedure:
 
 1. Log in to fasrc
 2. Run this command in shell
+3. Note that our environment move to "/n/holylfs06/"
 ```
-echo "/n/holylfs05/LABS/buenrostro_lab/Lab/scprinter_env" >> ~/.conda/environments.txt
+echo "/n/holylfs06/LABS/buenrostro_lab/Lab/scprinter_env" >> ~/.conda/environments.txt
 ```
 
 After that, `scprinter_env` should appear in your jupyter-lab ipykernel list.

@@ -1,20 +1,20 @@
-from ..utils import regionparser
+import anndata
 
-import numpy as np
-import cupy as cp
-import cupyx as cx
+from ..utils import regionparser
 import scipy
-from pynndescent import NNDescent
 from tqdm.auto import tqdm, trange
 from typing import Union
-import cupy as cp
 import logging
 from tqdm.auto import tqdm
 import scipy.sparse as sparse
 from anndata import AnnData
 
 from scipy.sparse import csr_matrix as scipy_csr_matrix
-from cupyx.scipy.sparse import csr_matrix as cupy_csr_matrix
+
+from pynndescent import NNDescent
+import numpy as np
+import pandas as pd
+import anndata
 
 def GC_content(dna_string):
     a,c,g,t = 0,0,0,0
@@ -33,9 +33,10 @@ def GC_content(dna_string):
 
 
 def get_bias(adata, genome):
-
-
-    peaks=  regionparser(list(adata.var_names))
+    if type(adata) is not anndata.AnnData:
+        peaks = regionparser(adata)
+    else:
+        peaks=  regionparser(list(adata.var_names))
     gc_contents = []
     overall_freq = [0,0,0,0]
     for chrom, start, end in tqdm(peaks.iloc[:, 0:3].values, desc="Fetching GC content"):
@@ -48,9 +49,12 @@ def get_bias(adata, genome):
         gc_contents.append((g+c) / (a+c+g+t))
     gc_contents = np.asarray(gc_contents)
     gc_contents[np.isnan(gc_contents)] = 0.5
-    adata.var['gc_content'] = gc_contents
     overall_freq = np.array(overall_freq)
     overall_freq = overall_freq / np.sum(overall_freq)
+    if type(adata) is not anndata.AnnData:
+        return gc_contents, overall_freq
+
+    adata.var['gc_content'] = gc_contents
     adata.uns['bg_freq'] = overall_freq
     return None
 
@@ -146,6 +150,8 @@ def bg_sample_helper(bin_membership, bin_p, bin_density, niterations):
 
 
 def scipy_to_cupy_sparse(sparse_matrix):
+    import cupy as cp
+    from cupyx.scipy.sparse import csr_matrix as cupy_csr_matrix
     if not isinstance(sparse_matrix, scipy_csr_matrix):
         raise ValueError("Input matrix must be a SciPy CSR matrix")
 
@@ -165,52 +171,113 @@ def scipy_to_cupy_sparse(sparse_matrix):
     return cupy_sparse_matrix
 
 
-def compute_deviations_gpu(adata, chunk_size: int = 10000):
+def compute_deviations_gpu(adata, chunk_size: int = 10000, device='cuda'):
     assert "bg_peaks" in adata.varm_keys(), "Cannot find background peaks in the input object, please first run get_bg_peaks!"
+    if device == 'cuda':
+        import cupy as backend
+    else:
+        import numpy as backend
 
     logging.info('Computing expectation reads per cell and peak...')
-    expectation_var = cp.asarray(adata.X.sum(0), dtype=np.float32).reshape((1, adata.X.shape[1]))
+    expectation_var = backend.asarray(adata.X.sum(0), dtype=backend.float32).reshape((1, adata.X.shape[1]))
     expectation_var /= expectation_var.sum()
-    expectation_obs = cp.asarray(adata.X.sum(1), dtype=np.float32).reshape((adata.X.shape[0], 1))
-    motif_match = cp.array(adata.varm['motif_match'])
-    obs_dev = cp.zeros((adata.n_obs, motif_match.shape[1]), dtype=cp.float32)
+    expectation_obs = backend.asarray(adata.X.sum(1), dtype=backend.float32).reshape((adata.X.shape[0], 1))
+    motif_match = backend.array(adata.varm['motif_match'])
+    obs_dev = backend.zeros((adata.n_obs, motif_match.shape[1]), dtype=backend.float32)
 
     n_bg_peaks = adata.varm['bg_peaks'].shape[1]
-    bg_dev = cp.zeros((n_bg_peaks, adata.n_obs, motif_match.shape[1]), dtype=cp.float32)
+    bg_dev = backend.zeros((n_bg_peaks, adata.n_obs, motif_match.shape[1]), dtype=backend.float32)
 
     for start in tqdm(range(0, adata.n_obs, chunk_size), desc="Processing chunks"):
         end = min(start + chunk_size, adata.n_obs)
         X_chunk = adata.X[start:end]
 
-        if sparse.isspmatrix(X_chunk):
+        if sparse.isspmatrix(X_chunk) and device == 'cuda':
             X_chunk = scipy_to_cupy_sparse(X_chunk)
         else:
-            X_chunk = cp.array(X_chunk)
+            X_chunk = backend.array(X_chunk)
 
         obs_dev[start:end, :] = _compute_deviations_gpu(motif_match, X_chunk, expectation_obs[start:end],
-                                                        expectation_var)
+                                                        expectation_var, device=device)
 
         for i in trange(n_bg_peaks):
-            bg_peak_idx = cp.array(adata.varm['bg_peaks'][:, i]).flatten()
+            bg_peak_idx = backend.array(adata.varm['bg_peaks'][:, i]).flatten()
             bg_motif_match = motif_match[bg_peak_idx, :]
             bg_dev[i, start:end, :] = _compute_deviations_gpu(bg_motif_match, X_chunk, expectation_obs[start:end],
-                                                              expectation_var)
+                                                              expectation_var, device=device)
 
-    mean_bg_dev = cp.mean(bg_dev, axis=0)
-    std_bg_dev = cp.std(bg_dev, axis=0)
+    mean_bg_dev = backend.mean(bg_dev, axis=0)
+    std_bg_dev = backend.std(bg_dev, axis=0)
     dev = (obs_dev - mean_bg_dev) / std_bg_dev
-    dev = cp.nan_to_num(dev, nan=0.0)
+    dev = backend.nan_to_num(dev, nan=0.0)
 
-    dev = AnnData(dev.get(), dtype='float32')  # Convert back to CPU for AnnData compatibility
-    dev.obs_names = adata.obs_names
+    dev = AnnData(dev.get() if device == 'cuda' else dev, dtype='float32', obs=adata.obs.copy())  # Convert back to CPU for AnnData compatibility
+    # dev.obs_names = adata.obs_names
     dev.var_names = adata.uns['motif_name']
     return dev
 
 
-def _compute_deviations_gpu(motif_match, count, expectation_obs, expectation_var):
+def _compute_deviations_gpu(motif_match, count, expectation_obs, expectation_var, device):
+    if device == 'cuda':
+        import cupy as backend
+    else:
+        import numpy as backend
+
     observed = count.dot(motif_match)
     expected = expectation_obs.dot(expectation_var.dot(motif_match))
-    out = cp.zeros_like(expected)
-    cp.divide(observed - expected, expected, out=out)
+    out = backend.zeros_like(expected)
+    backend.divide(observed - expected, expected, out=out)
     out[expected == 0] = 0
     return out
+
+def bagDeviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None, use_name=True):
+    assert motif_corr_matrix is not None, "Motif correlation matrix must be provided"
+    assert 0.15 < cor < 1, "Correlation coefficient must be between 0.15 and 1"
+    assert adata is not None or ranked_df is not None, "Either adata or ranking_df must be provided"
+
+    # Compute variability and get transcription factors (TFs)
+    if adata is not None:
+        x = adata.X
+        if type(adata.X) not in [np.ndarray]:
+            x = x.get()
+        vb = np.nanstd(x, axis=0)
+        vb = pd.DataFrame({'variability':vb}, index=adata.var.index)
+        vb = vb.sort_values(by=['variability'], ascending=False)
+        TFnames = vb.index.tolist()
+    else:
+        TFnames = ranked_df.index.tolist()
+    TFnames_to_rank = {tf:i for i,tf in enumerate(TFnames)}
+    # Import correlation based on PWMs for the organism
+    cormat = pd.read_csv(motif_corr_matrix,sep='\t')   # Assuming the RDS file contains one object
+    if use_name:
+        tf1 = [xx.split("_")[2] for xx in cormat['TF1']]
+        tf2 = [xx.split("_")[2] for xx in cormat['TF2']]
+        cormat['TF1'] = tf1
+        cormat['TF2'] = tf2
+    assert set(TFnames).issubset(set(cormat['TF1']).union(set(cormat['TF2']))), "All TF names must be in the correlation matrix"
+
+    i = 1
+    TFgroups = []
+    while len(TFnames) != 0:
+        tfcur = TFnames[0]
+        boo = ((cormat['TF1'] == tfcur) | (cormat['TF2'] == tfcur)) & (cormat['Pearson'] >= cor)
+        hits = cormat[boo]
+        tfhits = list(np.unique(hits[['TF1', 'TF2']])) + [tfcur]
+
+        # Update lists
+        TFnames = [tf for tf in TFnames if tf not in tfhits]
+        TFgroups.append(tfhits)
+        cormat = cormat[cormat['TF1'].isin(TFnames) & cormat['TF2'].isin(TFnames)]
+        i += 1
+
+    sentinalTFs = []
+    for group in TFgroups:
+        ranks = [TFnames_to_rank[tf] if tf in TFnames_to_rank else 1e9 for tf in group]
+        sentinalTFs.append(group[np.argmin(ranks)])
+    if adata is not None:
+        objReduced = adata.var.loc[sentinalTFs]
+        objReduced['groups'] = TFgroups
+        return objReduced
+    else:
+        return sentinalTFs, TFgroups
+

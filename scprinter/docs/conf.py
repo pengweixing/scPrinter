@@ -123,16 +123,17 @@ else:
     switcher_version = f"{version}"
 
 html_theme_options = {
-    "github_url": "https://github.com/ruochiz/scPrinter",
+    "github_url": "https://github.com/broadinstitute/PRINT",
     "navbar_end": ["version-switcher", "theme-switcher", "navbar-icon-links"],
-    "switcher": {
-        "version_match": switcher_version,
-        "json_url": "https://github.com/ruochiz/scPrinter/docs/_static/versions.json",
-    },
+    # "switcher": {
+    #     "version_match": switcher_version,
+    #     "json_url": "https://raw.githubusercontent.com/broadinstitute/PRINT/main/docs/_static/versions.json",
+    # },
 }
 
 
-commit = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('ascii')
+# commit = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('ascii')
+commit = "main"
 code_url = f"https:/github.com/broadinstitute/PRINT/blob/{commit}"
 
 # based on numpy doc/source/conf.py

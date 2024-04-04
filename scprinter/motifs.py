@@ -53,11 +53,13 @@ def parse_jaspar(file_path):
                 if record:
                     records.append(PFM(record['name'], record['weights']))
                 # Start a new record
-                record = {'name': line[1:].replace(' ', ''), 'weights': {'A': [], 'C': [], 'G': [], 'T': []}}
+                record = {'name': line[1:].split(' ')[-1], 'weights': {'A': [], 'C': [], 'G': [], 'T': []}}
             elif len(line) > 0:
                 # Parse the weight line
                 nucleotide, values_str = line.split(' ', 1)
-                values = list(map(float, values_str.strip('[]').split()))
+                # print (nucleotide)
+                # print (values_str.strip('[]').split())
+                values = list(map(float, values_str.strip(' ').strip('[]').split()))
                 if record:
                     record['weights'][nucleotide] = values
 

@@ -45,3 +45,5 @@ __pycache__/
 /.idea/
 /.vscode/
 .ipynb_checkpoints/
+/backup/
+.DS_Store

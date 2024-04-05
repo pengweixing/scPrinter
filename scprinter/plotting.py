@@ -1,40 +1,43 @@
 from __future__ import annotations
+
+import time
+import warnings
+
+import matplotlib as mpl
 import matplotlib.axes
 import matplotlib.pyplot as plt
-import seaborn as sns
-from . import motifs
-from . import getBias
-from .fetch import _get_group_atac, get_group_atac, get_region_atac
-from .utils import regionparser, cell_grouping2cell_grouping_idx
-from .getFootprint import fastMultiScaleFootprints,rz_conv
-from .io import PyPrinter
-from .plotting_seq import plot_a_for_plotly, plot_c_for_plotly, plot_g_for_plotly, plot_t_for_plotly
 import numpy as np
 import pandas as pd
 import plotly.graph_objs as go
 import pyBigWig
-from plotly.subplots import make_subplots
-import time
+import pyranges
+import seaborn as sns
+import torch
 from dna_features_viewer import GraphicFeature, GraphicRecord
 from dna_features_viewer.compute_features_levels import compute_features_levels
+from plotly.subplots import make_subplots
 from scanpy.plotting.palettes import default_20, default_28, default_102
-import pyranges
-from typing_extensions import Literal
-from .sync_visualization import *
-import torch
-import matplotlib as mpl
 from scipy import interpolate
-import warnings
+from typing_extensions import Literal
+
+from . import getBias, motifs
+from .fetch import _get_group_atac, get_group_atac, get_region_atac
+from .getFootprint import fastMultiScaleFootprints, rz_conv
+from .io import PyPrinter
+from .plotting_seq import plot_a_for_plotly, plot_c_for_plotly, plot_g_for_plotly, plot_t_for_plotly
+from .sync_visualization import *
+from .utils import cell_grouping2cell_grouping_idx, regionparser
 
 
-
-def plot_region_atac(printer: PyPrinter,
-                    cell_barcodes: list[str],
-                    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
-                    ax: matplotlib.axes.Axes | None = None,
-                    smooth: bool | int = False,
-                     **kwargs):
-    '''
+def plot_region_atac(
+    printer: PyPrinter,
+    cell_barcodes: list[str],
+    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
+    ax: matplotlib.axes.Axes | None = None,
+    smooth: bool | int = False,
+    **kwargs,
+):
+    """
     Plot the ATAC-seq signal of a region for **one** group of cells
 
     Parameters
@@ -55,10 +58,8 @@ def plot_region_atac(printer: PyPrinter,
     Returns
     -------
 
-    '''
-    atac = get_region_atac(printer,
-                           cell_barcodes,
-                           region).toarray().sum(axis=0)
+    """
+    atac = get_region_atac(printer, cell_barcodes, region).toarray().sum(axis=0)
     if smooth:
         atac = rz_conv(atac, n=smooth)
     region = regionparser(region, printer)
@@ -68,22 +69,25 @@ def plot_region_atac(printer: PyPrinter,
     # ax.get_xaxis().set_visible(False)
     ax.set_xticks([0, int(0.5 * atac.shape[-1]), atac.shape[-1]])
     ax.set_xlim(0, atac.shape[-1])
-    ax.set_title('Tn5 Insertion on %s:%d-%d' % (region['Chromosome'][0],
-                                                region['Start'][0],
-                                                region['End'][0]))
+    ax.set_title(
+        "Tn5 Insertion on %s:%d-%d"
+        % (region["Chromosome"][0], region["Start"][0], region["End"][0])
+    )
     return ax
 
-def plot_group_atac(printer: PyPrinter,
-                    cell_grouping: list[list[str]] | list[str] | np.ndarray,
-                    group_names: list[str] | str | np.ndarray,
-                    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
-                    ax: list[matplotlib.axes.Axes] | matplotlib.axes.Axes | None = None,
-                    color: list[str] = None,
-                    smooth: bool = False,
-                    legend: bool = True,
-                    **kwargs):
 
-    '''
+def plot_group_atac(
+    printer: PyPrinter,
+    cell_grouping: list[list[str]] | list[str] | np.ndarray,
+    group_names: list[str] | str | np.ndarray,
+    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
+    ax: list[matplotlib.axes.Axes] | matplotlib.axes.Axes | None = None,
+    color: list[str] = None,
+    smooth: bool = False,
+    legend: bool = True,
+    **kwargs,
+):
+    """
     Plot the ATAC-seq signal of a region for **multiple** groups of cells
 
     Parameters
@@ -114,15 +118,13 @@ def plot_group_atac(printer: PyPrinter,
     Returns
     -------
 
-    '''
+    """
 
     if type(group_names) not in [np.ndarray, list]:
         group_names = [group_names]
         cell_grouping = [cell_grouping]
 
-    atacs = get_group_atac(printer,
-                           cell_grouping,
-                           region)
+    atacs = get_group_atac(printer, cell_grouping, region)
     if smooth:
         atacs = rz_conv(atacs, n=smooth)
 
@@ -132,13 +134,19 @@ def plot_group_atac(printer: PyPrinter,
     if type(ax) is list:
         for atac, ax_, group_name in zip(atacs, ax, group_names):
             x = np.arange(len(atac))
-            ax_.bar(x=x, height=atac, width=1,color=color, **kwargs)
+            ax_.bar(x=x, height=atac, width=1, color=color, **kwargs)
             ax_.set_xticks([0, int(0.5 * atacs.shape[-1]), atacs.shape[-1]])
             ax_.set_xlim(0, atacs.shape[-1])
             # ax_.get_xaxis().set_visible(False)
-            ax_.set_title('Tn5 Insertion on %s:%d-%d - %s' % (region['Chromosome'][0],
-                                                region['Start'][0],
-                                                region['End'][0], str(group_name)))
+            ax_.set_title(
+                "Tn5 Insertion on %s:%d-%d - %s"
+                % (
+                    region["Chromosome"][0],
+                    region["Start"][0],
+                    region["End"][0],
+                    str(group_name),
+                )
+            )
             plt.tight_layout()
         return
     else:
@@ -152,7 +160,7 @@ def plot_group_atac(printer: PyPrinter,
                 color = default_28
             else:
                 color = default_102
-        cl = np.repeat(color[:len(group_names)],  atacs.shape[-1])
+        cl = np.repeat(color[: len(group_names)], atacs.shape[-1])
         ax.bar(x=x, height=y, color=cl, width=1, linewidth=0, **kwargs)
 
         labels = group_names
@@ -162,26 +170,29 @@ def plot_group_atac(printer: PyPrinter,
         # ax.get_xaxis().set_visible(False)
         ax.set_xticks([0, int(0.5 * atacs.shape[-1]), atacs.shape[-1]])
         ax.set_xlim(0, atacs.shape[-1])
-        ax.set_title('Tn5 Insertion on %s:%d-%d'% (region['Chromosome'][0],
-                                                region['Start'][0],
-                                                region['End'][0]))
+        ax.set_title(
+            "Tn5 Insertion on %s:%d-%d"
+            % (region["Chromosome"][0], region["Start"][0], region["End"][0])
+        )
         return
 
 
-def plot_binding_score(printer: PyPrinter,
-                       save_key: str,
-                       group_names: list[str] | str | np.ndarray,
-                       region: str | pd.DataFrame | pyranges.PyRanges | list[str],
-                       kind: Literal['bar', 'heatmap'] = 'bar',
-                       ax: list[matplotlib.axes.Axes] | matplotlib.axes.Axes | None = None,
-                       color: list[str] = None,
-                       cmap='Blues',
-                       vmin: float = 0.1,
-                       vmax: float = 1.0,
-                       row_label: list[str] | None = None,
-                       row_cluster: bool = False,
-                       legend: bool = True,
-                       **kwargs):
+def plot_binding_score(
+    printer: PyPrinter,
+    save_key: str,
+    group_names: list[str] | str | np.ndarray,
+    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
+    kind: Literal["bar", "heatmap"] = "bar",
+    ax: list[matplotlib.axes.Axes] | matplotlib.axes.Axes | None = None,
+    color: list[str] = None,
+    cmap="Blues",
+    vmin: float = 0.1,
+    vmax: float = 1.0,
+    row_label: list[str] | None = None,
+    row_cluster: bool = False,
+    legend: bool = True,
+    **kwargs,
+):
     """
     Plot the binding score of a region for **multiple** groups of cells
 
@@ -229,31 +240,43 @@ def plot_binding_score(printer: PyPrinter,
 
     adata = printer.bindingscoreadata[save_key]
     region = regionparser(region, printer)
-    region_identifier = '%s:%d-%d' % (str(region['Chromosome'][0]),
-                                    region['Start'][0],
-                                    region['End'][0])
+    region_identifier = "%s:%d-%d" % (
+        str(region["Chromosome"][0]),
+        region["Start"][0],
+        region["End"][0],
+    )
     try:
-        select_group = adata.obs_ix(np.array(group_names).astype('str'))
+        select_group = adata.obs_ix(np.array(group_names).astype("str"))
     except:
-        select_group =adata.obs.loc[group_names]['id']
+        select_group = adata.obs.loc[group_names]["id"]
 
     data = adata.obsm[region_identifier][select_group]
 
-
-
-    if kind == 'bar':
+    if kind == "bar":
         if ax is None:
             ax = plt.gca()
         if type(ax) is list:
             for score, ax_, group_name in zip(data, ax, group_names):
-                ax_.bar(x=np.arange(len(score)), height=score, width=1, color=color, **kwargs)
+                ax_.bar(
+                    x=np.arange(len(score)),
+                    height=score,
+                    width=1,
+                    color=color,
+                    **kwargs,
+                )
 
                 width = len(score)
                 ax_.set_xticks([0, int(0.5 * width), width])
                 ax_.set_xlim(0, width)
-                ax_.set_title('Tn5 Insertion on %s:%d-%d - %s' % (region['Chromosome'][0],
-                                                    region['Start'][0],
-                                                    region['End'][0], str(group_name)))
+                ax_.set_title(
+                    "Tn5 Insertion on %s:%d-%d - %s"
+                    % (
+                        region["Chromosome"][0],
+                        region["Start"][0],
+                        region["End"][0],
+                        str(group_name),
+                    )
+                )
                 plt.tight_layout()
             return
         else:
@@ -266,7 +289,7 @@ def plot_binding_score(printer: PyPrinter,
                     color = default_28
                 else:
                     color = default_102
-            cl = np.repeat(color[:len(group_names)], data.shape[-1])
+            cl = np.repeat(color[: len(group_names)], data.shape[-1])
             ax.bar(x=x, height=y, color=cl, width=1, **kwargs)
             labels = group_names
             if legend:
@@ -276,11 +299,12 @@ def plot_binding_score(printer: PyPrinter,
             width = data.shape[-1]
             ax.set_xticks([0, int(0.5 * width), width])
             ax.set_xlim(0, width)
-            ax.set_title('Binding Score on %s:%d-%d' % (region['Chromosome'][0],
-                                                    region['Start'][0],
-                                                    region['End'][0]))
+            ax.set_title(
+                "Binding Score on %s:%d-%d"
+                % (region["Chromosome"][0], region["Start"][0], region["End"][0])
+            )
             return ax
-    elif kind == 'heatmap':
+    elif kind == "heatmap":
 
         if row_label is not None:
             unique_label = np.unique(row_label)
@@ -295,52 +319,86 @@ def plot_binding_score(printer: PyPrinter,
         else:
             row_color = row_label
 
-        cg = sns.clustermap(data, cmap=cmap, vmin=vmin, vmax=vmax, **kwargs, row_cluster=row_cluster, col_cluster=False,
-                       row_colors=row_color,cbar_pos=None, dendrogram_ratio=0.0)
+        cg = sns.clustermap(
+            data,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            **kwargs,
+            row_cluster=row_cluster,
+            col_cluster=False,
+            row_colors=row_color,
+            cbar_pos=None,
+            dendrogram_ratio=0.0,
+        )
         ax_ = cg.ax_heatmap
         ax_.get_xaxis().set_visible(False)
         ax_.get_yaxis().set_visible(False)
 
         from matplotlib.patches import Patch
+
         handles = [Patch(facecolor=color[name]) for name in color]
         if legend:
-            plt.legend(handles, color, title='Species',
-                       bbox_to_anchor=(1.1, 1), bbox_transform=plt.gcf().transFigure, loc='upper right', frameon=False)
+            plt.legend(
+                handles,
+                color,
+                title="Species",
+                bbox_to_anchor=(1.1, 1),
+                bbox_transform=plt.gcf().transFigure,
+                loc="upper right",
+                frameon=False,
+            )
 
-        plt.title('Binding Score on %s:%d-%d' % (region['Chromosome'][0],
-                                                    region['Start'][0],
-                                                    region['End'][0]))
+        plt.title(
+            "Binding Score on %s:%d-%d"
+            % (region["Chromosome"][0], region["Start"][0], region["End"][0])
+        )
         return
 
-from matplotlib.scale import Transform, ScaleBase, LogLocator, LogFormatterSciNotation, NullFormatter, NullLocator
-from matplotlib.ticker import Locator, AutoLocator, _decade_less_equal, _decade_less, _decade_greater_equal, _decade_greater
+
 from matplotlib import _api
+from matplotlib.scale import (
+    LogFormatterSciNotation,
+    LogLocator,
+    NullFormatter,
+    NullLocator,
+    ScaleBase,
+    Transform,
+)
+from matplotlib.ticker import (
+    AutoLocator,
+    Locator,
+    _decade_greater,
+    _decade_greater_equal,
+    _decade_less,
+    _decade_less_equal,
+)
 
 
 class LogAddTransform(Transform):
     input_dims = output_dims = 1
 
-    def __init__(self, base, nonpositive='clip', offset=0.0):
+    def __init__(self, base, nonpositive="clip", offset=0.0):
         super().__init__()
         if base <= 0 or base == 1:
-            raise ValueError('The log base cannot be <= 0 or == 1')
+            raise ValueError("The log base cannot be <= 0 or == 1")
         self.base = base
-        self.offset= offset
-        self._clip = _api.check_getitem(
-            {"clip": True, "mask": False}, nonpositive=nonpositive)
+        self.offset = offset
+        self._clip = _api.check_getitem({"clip": True, "mask": False}, nonpositive=nonpositive)
 
     def __str__(self):
         return "{}(base={}, nonpositive={!r})".format(
-            type(self).__name__, self.base, "clip" if self._clip else "mask")
+            type(self).__name__, self.base, "clip" if self._clip else "mask"
+        )
 
     def transform_non_affine(self, a):
         # Ignore invalid values due to nans being passed to the transform.
         with np.errstate(divide="ignore", invalid="ignore"):
             log = {np.e: np.log, 2: np.log2, 10: np.log10}.get(self.base)
             if log:  # If possible, do everything in a single call to NumPy.
-                out = log(a+ self.offset)
+                out = log(a + self.offset)
             else:
-                out = np.log(a+ self.offset)
+                out = np.log(a + self.offset)
                 out /= np.log(self.base)
             if self._clip:
                 # SVG spec says that conforming viewers must support values up
@@ -358,6 +416,7 @@ class LogAddTransform(Transform):
     def inverted(self):
         return InvertedLogAddTransform(self.base, self.offset)
 
+
 class InvertedLogAddTransform(Transform):
     input_dims = output_dims = 1
 
@@ -371,17 +430,19 @@ class InvertedLogAddTransform(Transform):
 
     def transform_non_affine(self, a):
         out = np.power(self.base, a) - self.offset
-        print (out)
+        print(out)
         return out
 
     def inverted(self):
         return LogAddTransform(self.base, self.offset)
 
+
 class LogAddScale(ScaleBase):
     """
     A standard logarithmic scale.  Care is taken to only plot positive values.
     """
-    name = 'log'
+
+    name = "log"
 
     def __init__(self, axis, *, base=10, subs=None, nonpositive="clip", offset=0.0):
         """
@@ -410,8 +471,7 @@ class LogAddScale(ScaleBase):
         axis.set_major_locator(NullLocator())
         axis.set_major_formatter(NullFormatter())
         axis.set_minor_locator(NullLocator())
-        axis.set_minor_formatter(
-            NullFormatter())
+        axis.set_minor_formatter(NullFormatter())
 
     def get_transform(self):
         """Return the `.LogTransform` associated with this scale."""
@@ -422,30 +482,31 @@ class LogAddScale(ScaleBase):
         if not np.isfinite(minpos):
             minpos = 1e-300  # Should rarely (if ever) have a visible effect.
 
-        return (minpos if vmin <= 0 else vmin,
-                minpos if vmax <= 0 else vmax)
+        return (minpos if vmin <= 0 else vmin, minpos if vmax <= 0 else vmax)
 
-def plot_footprints(printer: PyPrinter,
-                    save_key: str | None,
-                    group_names: list[str] | str | np.ndarray,
-                    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
-                    cell_grouping: list[list[str]] | list[str] | np.ndarray | None = None,
-                    scales: list[int] | np.ndarray | None=None,
-                    stack: bool = False,
-                    ax: list[matplotlib.axes.Axes] | matplotlib.axes.Axes | None  = None,
-                    cmap='Blues',
-                    vmin: float = 0.5,
-                    vmax: float =2.0,
-                    figsize: tuple | Literal['auto'] = 'auto',
-                    edge_mode: Literal['remove', 'zeros', 'nothing'] = 'remove',
-                    row_label: list[str] | None = None,
-                    legend: bool = True,
-                    log_scale: bool = False,
-                    log_offset: float = 1.1,
-                    add_ticks: bool = False,
-                    clean_mode:bool = False,
-                    **kwargs
-                    ):
+
+def plot_footprints(
+    printer: PyPrinter,
+    save_key: str | None,
+    group_names: list[str] | str | np.ndarray,
+    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
+    cell_grouping: list[list[str]] | list[str] | np.ndarray | None = None,
+    scales: list[int] | np.ndarray | None = None,
+    stack: bool = False,
+    ax: list[matplotlib.axes.Axes] | matplotlib.axes.Axes | None = None,
+    cmap="Blues",
+    vmin: float = 0.5,
+    vmax: float = 2.0,
+    figsize: tuple | Literal["auto"] = "auto",
+    edge_mode: Literal["remove", "zeros", "nothing"] = "remove",
+    row_label: list[str] | None = None,
+    legend: bool = True,
+    log_scale: bool = False,
+    log_offset: float = 1.1,
+    add_ticks: bool = False,
+    clean_mode: bool = False,
+    **kwargs,
+):
     """
     Plot the footprints of a region for **multiple** groups of cells
 
@@ -499,10 +560,10 @@ def plot_footprints(printer: PyPrinter,
     Returns
     -------
     """
-    log_offset = int(10 ** log_offset)
+    log_offset = int(10**log_offset)
     if stack and type(scales) is not int:
         if len(scales) > 1:
-            raise ValueError('You can only stack the footprints when there is only one scale')
+            raise ValueError("You can only stack the footprints when there is only one scale")
 
     if type(group_names) not in [np.ndarray, list]:
         group_names = [group_names]
@@ -512,43 +573,43 @@ def plot_footprints(printer: PyPrinter,
             cell_grouping = [cell_grouping]
 
     region = regionparser(region, printer)
-    region_identifier = '%s:%d-%d' % (str(region['Chromosome'][0]),
-                                      region['Start'][0],
-                                      region['End'][0])
+    region_identifier = "%s:%d-%d" % (
+        str(region["Chromosome"][0]),
+        region["Start"][0],
+        region["End"][0],
+    )
 
     if save_key is not None:
         adata = printer.footprintsadata[save_key]
         try:
-            select_group = adata.obs_ix(np.array(group_names).astype('str'))
+            select_group = adata.obs_ix(np.array(group_names).astype("str"))
         except:
-            select_group = adata.obs.loc[group_names]['id']
+            select_group = adata.obs.loc[group_names]["id"]
         if scales is None:
             scales = slice(None)
-            scales_name = np.array(adata.uns['scales'])
+            scales_name = np.array(adata.uns["scales"])
         else:
-            scales = np.array([list(adata.uns['scales']).index(s) for s in scales])
+            scales = np.array([list(adata.uns["scales"]).index(s) for s in scales])
             scales_name = scales
         data = adata.obsm[region_identifier][select_group][:, scales]
     else:
-        cell_grouping = cell_grouping2cell_grouping_idx(printer,
-                                                        cell_grouping)
-        atac = _get_group_atac(printer,
-                           cell_grouping,
-                           region)
-        bias = getBias.getPrecomputedBias(printer.insertion_file.uns['bias_path'],
-                   region, savePath=None)[0]
+        cell_grouping = cell_grouping2cell_grouping_idx(printer, cell_grouping)
+        atac = _get_group_atac(printer, cell_grouping, region)
+        bias = getBias.getPrecomputedBias(
+            printer.insertion_file.uns["bias_path"], region, savePath=None
+        )[0]
 
-        data = fastMultiScaleFootprints(atac,
-                 bias,
-                 printer.dispersionModel,
-                 modes=scales if scales is not None else np.arange(2,101)
-                 )
-        scales_name = scales if scales is not None else np.arange(2,101)
-
+        data = fastMultiScaleFootprints(
+            atac,
+            bias,
+            printer.dispersionModel,
+            modes=scales if scales is not None else np.arange(2, 101),
+        )
+        scales_name = scales if scales is not None else np.arange(2, 101)
 
     if not stack:
         if ax is None:
-            if figsize == 'auto':
+            if figsize == "auto":
                 figsize = (4, 4 * len(group_names))
             fig, axs = plt.subplots(len(group_names), 1, figsize=figsize)
             if len(group_names) > 1:
@@ -561,16 +622,16 @@ def plot_footprints(printer: PyPrinter,
         if type(ax) is list:
             for score, ax_, group_name in zip(data, ax, group_names):
                 width = score.shape[-1]
-                if edge_mode == 'remove':
+                if edge_mode == "remove":
                     score = score[:, 100:-100]
-                    x = np.arange(100, width-100)
-                elif edge_mode == 'zeros':
+                    x = np.arange(100, width - 100)
+                elif edge_mode == "zeros":
                     score = score[:,]
                     score[:, :100] = 0
-                    score[:,-100:] = 0
+                    score[:, -100:] = 0
                     x = np.arange(width)
                 else:
-                    score = score[:, ]
+                    score = score[:,]
                     x = np.arange(width)
                 # if log_offset > 0:
                 #     score = np.concatenate([
@@ -580,33 +641,46 @@ def plot_footprints(printer: PyPrinter,
                 # index = np.concatenate([np.zeros(log_offset),
                 #          np.array(scales_name) * 2])
                 index = np.array(scales_name) * 2
-                df = pd.DataFrame(score, columns=x, index = index)
-                ax_ = sns.heatmap(df, ax=ax_,
-                            cmap=cmap, square=False, cbar=False, vmax=vmax, vmin=vmin, **kwargs)
+                df = pd.DataFrame(score, columns=x, index=index)
+                ax_ = sns.heatmap(
+                    df,
+                    ax=ax_,
+                    cmap=cmap,
+                    square=False,
+                    cbar=False,
+                    vmax=vmax,
+                    vmin=vmin,
+                    **kwargs,
+                )
                 ax_.get_xaxis().set_visible(False)
 
                 ax_.set_ylim(0, len(df))
                 if log_scale:
-                    ax_.set_yscale(LogAddScale(axis=ax_.get_yaxis(),
-                                               subs=[0],
-                                               offset=log_offset))
+                    ax_.set_yscale(LogAddScale(axis=ax_.get_yaxis(), subs=[0], offset=log_offset))
                 if not add_ticks:
                     ax_.get_yaxis().set_visible(False)
                 else:
                     ticklabel = np.array([50, 100, 150, 200])
-                    index = list(index.astype('int'))
-                    ticks = np.array([index.index(int(xx*0.5)*2) for xx in ticklabel])#+log_offset
+                    index = list(index.astype("int"))
+                    ticks = np.array(
+                        [index.index(int(xx * 0.5) * 2) for xx in ticklabel]
+                    )  # +log_offset
                     ax_.set_yticks(ticks=ticks, labels=ticklabel)
                 if not clean_mode:
-                    ax_.set_title('Multiscale footprints\n%s:%d-%d\n%s' % (region['Chromosome'][0],
-                                                        region['Start'][0],
-                                                        region['End'][0], str(group_name)))
+                    ax_.set_title(
+                        "Multiscale footprints\n%s:%d-%d\n%s"
+                        % (
+                            region["Chromosome"][0],
+                            region["Start"][0],
+                            region["End"][0],
+                            str(group_name),
+                        )
+                    )
 
         plt.tight_layout()
         if clean_mode:
-            plt.axis('off')
-            plt.subplots_adjust(top=1, bottom=0, right=1, left=0,
-                                hspace=0, wspace=0)
+            plt.axis("off")
+            plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
             plt.margins(0, 0)
         return
     else:
@@ -623,27 +697,47 @@ def plot_footprints(printer: PyPrinter,
             row_color = np.array([color[xx] for xx in row_label])
         else:
             row_color = row_label
-        if figsize == 'auto':
+        if figsize == "auto":
             figsize = (4, 4)
-        cg = sns.clustermap(data, cmap=cmap, vmin=vmin, vmax=vmax, row_cluster=False, col_cluster=False,
-                            row_colors=row_color, cbar_pos=None, dendrogram_ratio=0.0, figsize=figsize, **kwargs)
+        cg = sns.clustermap(
+            data,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            row_cluster=False,
+            col_cluster=False,
+            row_colors=row_color,
+            cbar_pos=None,
+            dendrogram_ratio=0.0,
+            figsize=figsize,
+            **kwargs,
+        )
         ax_ = cg.ax_heatmap
         ax_.get_xaxis().set_visible(False)
         ax_.get_yaxis().set_visible(False)
 
         from matplotlib.patches import Patch
+
         handles = [Patch(facecolor=color[name]) for name in color]
         if legend:
-            plt.legend(handles, color, title='row label',
-                       bbox_to_anchor=(1.1, 1), bbox_transform=plt.gcf().transFigure, loc='upper right', frameon=False)
+            plt.legend(
+                handles,
+                color,
+                title="row label",
+                bbox_to_anchor=(1.1, 1),
+                bbox_transform=plt.gcf().transFigure,
+                loc="upper right",
+                frameon=False,
+            )
         return
 
 
-
-def plot_gene_match_static(printer: PyPrinter,
-                           region: str | pd.DataFrame | pyranges.PyRanges | list[str],
-                           ax: matplotlib.axes.Axes,
-                           **kwargs):
+def plot_gene_match_static(
+    printer: PyPrinter,
+    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
+    ax: matplotlib.axes.Axes,
+    **kwargs,
+):
     """
     Plot reference genome gene annotation
 
@@ -664,30 +758,34 @@ def plot_gene_match_static(printer: PyPrinter,
 
     gffdb = printer.gff_db
     region = regionparser(region, printer)
-    chrom, s, e = str(region['Chromosome'][0]), region['Start'][0], region['End'][0]
+    chrom, s, e = str(region["Chromosome"][0]), region["Start"][0], region["End"][0]
 
     genes = list(gffdb.region(seqid=chrom, start=s, end=e))
     feats = []
     for f in genes:
-        if f.featuretype == 'gene':
-            feats.append(GraphicFeature(
-                start=f.start - s,
-                end=min(f.end - s, e-s),
-                strand=f.strand,
-                color="#d3d3d3",
-                label=f.attributes['gene_name'][0]
-            ))
+        if f.featuretype == "gene":
+            feats.append(
+                GraphicFeature(
+                    start=f.start - s,
+                    end=min(f.end - s, e - s),
+                    strand=f.strand,
+                    color="#d3d3d3",
+                    label=f.attributes["gene_name"][0],
+                )
+            )
     record = GraphicRecord(sequence_length=e - s, features=feats)
     _ = record.plot(ax=ax, **kwargs)
 
 
-def plot_motif_match_static(motif: motifs.Motifs,
-                            printer: PyPrinter,
-                            region: str | pd.DataFrame | pyranges.PyRanges | list[str],
-                            ax: matplotlib.axes.Axes,
-                            strand=True,
-                            clean=True,
-                            color_dict=None,):
+def plot_motif_match_static(
+    motif: motifs.Motifs,
+    printer: PyPrinter,
+    region: str | pd.DataFrame | pyranges.PyRanges | list[str],
+    ax: matplotlib.axes.Axes,
+    strand=True,
+    clean=True,
+    color_dict=None,
+):
     """
     Plot motif match
 
@@ -719,27 +817,31 @@ def plot_motif_match_static(motif: motifs.Motifs,
     if color_dict is None and color is not None:
         color_dict = {tf: color[i] for i, tf in enumerate(tfs)}
     region = regionparser(region, printer)
-    chrom, s, e = str(region['Chromosome'][0]), region['Start'][0], region['End'][0]
-    motif_matchs = motif.scan_motif([[chrom, s, e, "+"]],
-                                    clean=clean, strand=strand)
+    chrom, s, e = str(region["Chromosome"][0]), region["Start"][0], region["End"][0]
+    motif_matchs = motif.scan_motif([[chrom, s, e, "+"]], clean=clean, strand=strand)
     if color_dict is None:
         color = list(default_102) * 5
         tfs = set([match[4] for match in motif_matchs])
         color_dict = {tf: color[i] for i, tf in enumerate(tfs)}
 
+    plot_genome_annotations(
+        ax,
+        start=[match[7] for match in motif_matchs],
+        end=[match[8] for match in motif_matchs],
+        label=[match[4] for match in motif_matchs],
+        strand=[match[6] for match in motif_matchs],
+        color_dict=color_dict,
+    )
 
-    plot_genome_annotations(ax, start=[match[7] for match in motif_matchs],
-                     end=[match[8] for match in motif_matchs],
-                        label=[match[4] for match in motif_matchs],
-                        strand=[match[6] for match in motif_matchs],
-                        color_dict=color_dict)
 
-def plot_genome_annotations(ax: matplotlib.axes.Axes,
-                     start,
-                     end,
-                     label=None,
-                     strand=None,
-                     color_dict=None,):
+def plot_genome_annotations(
+    ax: matplotlib.axes.Axes,
+    start,
+    end,
+    label=None,
+    strand=None,
+    color_dict=None,
+):
     """
     a general function to plot genome annotations.
 
@@ -757,9 +859,9 @@ def plot_genome_annotations(ax: matplotlib.axes.Axes,
 
     """
     if strand is None:
-        strand = ['*' for _ in range(len(start))]
+        strand = ["*" for _ in range(len(start))]
     if label is None:
-        label = ['' for _ in range(len(start))]
+        label = ["" for _ in range(len(start))]
 
     uniq_label = np.unique(label)
     if len(uniq_label) <= 20:
@@ -772,13 +874,9 @@ def plot_genome_annotations(ax: matplotlib.axes.Axes,
     if color_dict is None and color is not None:
         color_dict = {tf: color[i] for i, tf in enumerate(uniq_label)}
 
-
-
-    features = [GraphicFeature(start=s,
-                               end=e,
-                               strand=sd,
-                               color=color_dict[lb],
-                               label=lb) for (s,e,sd, lb) in zip(start, end, strand, label)]
-    record = GraphicRecord(sequence_length=end-start, features=features)
+    features = [
+        GraphicFeature(start=s, end=e, strand=sd, color=color_dict[lb], label=lb)
+        for (s, e, sd, lb) in zip(start, end, strand, label)
+    ]
+    record = GraphicRecord(sequence_length=end - start, features=features)
     _ = record.plot(ax=ax)
-

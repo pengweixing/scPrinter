@@ -1,27 +1,27 @@
 from __future__ import annotations
-import h5py
-import pyranges
-import torch
-import snapatac2 as snap
-import numpy as np
-import os
-import sys
-import gzip
-import pandas as pd
-from copy import deepcopy
-import re
-import MOODS
-from pyfaidx import Fasta
-import pybedtools
-from pathlib import Path
-from scipy.sparse import csr_matrix
-import scipy
-import tempfile
 
-def DNA_one_hot(sequence,
-                alphabet='ACGT',
-                dtype='float',
-                device='cpu'):
+import gzip
+import os
+import re
+import sys
+import tempfile
+from copy import deepcopy
+from pathlib import Path
+
+import h5py
+import MOODS
+import numpy as np
+import pandas as pd
+import pybedtools
+import pyranges
+import scipy
+import snapatac2 as snap
+import torch
+from pyfaidx import Fasta
+from scipy.sparse import csr_matrix
+
+
+def DNA_one_hot(sequence, alphabet="ACGT", dtype="float", device="cpu"):
     """Convert a DNA sequence string into a one-hot encoding tensor.
     Parameters
     ----------
@@ -40,17 +40,19 @@ def DNA_one_hot(sequence,
         One-hot encoding tensor.
     """
     lookup = {char: i for i, char in enumerate(alphabet)}
-    lookup['N'] = -1
-    embed = torch.zeros((len(alphabet)+1, len(sequence)),dtype=torch.int8, device=device)
+    lookup["N"] = -1
+    embed = torch.zeros((len(alphabet) + 1, len(sequence)), dtype=torch.int8, device=device)
     embed[[lookup[char] for char in sequence], torch.arange(len(sequence))] = 1
 
     return embed[:-1, :]
+
 
 def zscore2pval(footprint):
     pval = scipy.stats.norm.cdf(footprint, 0, 1)
     pval = -np.log10(pval)
     pval[np.isnan(pval)] = 0
     return pval
+
 
 def zscore2pval_torch(footprint):
     # pval = torch.distributions.Normal(0, 1).cdf(footprint)
@@ -74,6 +76,7 @@ def zscore2pval_torch(footprint):
 
     return pval_log
 
+
 def get_stats_for_genome(fasta_file):
     """
     This is a function that reads a fasta file and return a dictionary of chromosome names and their lengths
@@ -96,39 +99,40 @@ def get_stats_for_genome(fasta_file):
     bg = MOODS.tools.bg_from_sequence_dna(str(b), 1)
     return chrom_sizes, bg
 
+
 def GC_content(dna_string):
-    a,c,g,t = 0,0,0,0
+    a, c, g, t = 0, 0, 0, 0
     # Iterate over each character in the string and increment the corresponding count
     for nucleotide in dna_string:
-        if nucleotide == 'G':
+        if nucleotide == "G":
             g += 1
-        elif nucleotide == 'C':
+        elif nucleotide == "C":
             c += 1
-        elif nucleotide == 'A':
+        elif nucleotide == "A":
             a += 1
-        elif nucleotide == 'T':
+        elif nucleotide == "T":
             t += 1
 
-    return a,c,g,t
+    return a, c, g, t
 
 
 def get_peak_bias(region, genome):
     peaks = region
     gc_contents = []
-    overall_freq = [0,0,0,0]
+    overall_freq = [0, 0, 0, 0]
     for chrom, start, end in peaks.iloc[:, 0:3].values:
         seq = genome.fetch_seq(chrom, start, end).upper()
-        a,c,g,t = GC_content(seq)
+        a, c, g, t = GC_content(seq)
         overall_freq[0] += a
         overall_freq[1] += c
         overall_freq[2] += g
         overall_freq[3] += t
-        gc_contents.append((g+c) / (a+c+g+t))
+        gc_contents.append((g + c) / (a + c + g + t))
     gc_contents = np.asarray(gc_contents)
     gc_contents[np.isnan(gc_contents)] = 0.5
 
     overall_freq = overall_freq / np.sum(overall_freq)
-    return  overall_freq
+    return overall_freq
 
 
 def get_genome_bg(genome):
@@ -139,9 +143,13 @@ def get_genome_bg(genome):
     bg = MOODS.tools.bg_from_sequence_dna(str(b), 1)
     return bg
 
+
 # a function to parse all kinds of regions specification
-def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str] ,
-                 printer=None, width:int|None=None):
+def regionparser(
+    regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
+    printer=None,
+    width: int | None = None,
+):
     """
     This function parses the regions specification and returns a dataframe with the first three columns ['Chromosome', 'Start', 'End']
     This is the base function that makes scPrinter compatible with different regions specification.
@@ -163,16 +171,18 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
     """
     if type(regions) is list:
         if ":" in regions[0] and "-" in regions[0]:
-            regions = pd.DataFrame([re.split(':|-', xx) for xx in regions])
-            regions.columns = ['Chromosome', 'Start', 'End'] + list(regions.columns)[3:]
-            regions['Start'] = regions['Start'].astype('int')
-            regions['End'] = regions['End'].astype('int')
+            regions = pd.DataFrame([re.split(":|-", xx) for xx in regions])
+            regions.columns = ["Chromosome", "Start", "End"] + list(regions.columns)[3:]
+            regions["Start"] = regions["Start"].astype("int")
+            regions["End"] = regions["End"].astype("int")
         elif "Gene:" in regions[0]:
             regions = [printer.gff_db[xx[5:]] for xx in regions]
-            chrom, start = [xx.chrom for xx in regions], [xx.start if xx.strand == '+' else xx.end for xx in regions]
-            regions = pd.DataFrame({'Chromosome':chrom, 'Start': start})
-            regions['End'] = regions['Start'] + int(printer.gene_region_width / 2)
-            regions['Start'] -= int(printer.gene_region_width / 2)
+            chrom, start = [xx.chrom for xx in regions], [
+                xx.start if xx.strand == "+" else xx.end for xx in regions
+            ]
+            regions = pd.DataFrame({"Chromosome": chrom, "Start": start})
+            regions["End"] = regions["Start"] + int(printer.gene_region_width / 2)
+            regions["Start"] -= int(printer.gene_region_width / 2)
         # regions_pr = dftopyranges(regions)
     elif type(regions) is pd.core.frame.DataFrame:
         regions = regions
@@ -182,51 +192,61 @@ def regionparser(regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[s
     elif type(regions) is str:
         if ":" in regions and "-" in regions:
             # regions = pd.DataFrame([re.split(':|-', regions)], columns=['Chromosome', 'Start', 'End'])
-            regions = pd.DataFrame([re.split(':|-', regions)])
-            regions.columns = ['Chromosome', 'Start', 'End'] + list(regions.columns)[3:]
+            regions = pd.DataFrame([re.split(":|-", regions)])
+            regions.columns = ["Chromosome", "Start", "End"] + list(regions.columns)[3:]
 
-            regions['Start'] = regions['Start'].astype('int')
-            regions['End'] = regions['End'].astype('int')
+            regions["Start"] = regions["Start"].astype("int")
+            regions["End"] = regions["End"].astype("int")
             # regions_pr = dftopyranges(regions)
         elif "Gene:" in regions:
             regions = printer.gff_db[regions[5:]]
-            chrom, start = [regions.chrom], [regions.start if regions.strand == '+' else regions.end]
-            regions = pd.DataFrame({'Chromosome': chrom, 'Start': start})
-            regions['End'] = regions['Start'] + int(printer.gene_region_width / 2)
-            regions['Start'] -= int(printer.gene_region_width / 2)
+            chrom, start = [regions.chrom], [
+                regions.start if regions.strand == "+" else regions.end
+            ]
+            regions = pd.DataFrame({"Chromosome": chrom, "Start": start})
+            regions["End"] = regions["Start"] + int(printer.gene_region_width / 2)
+            regions["Start"] -= int(printer.gene_region_width / 2)
         else:
             # regions_pr = pyranges.readers.read_bed(regions)
-            regions = pd.read_csv(regions, sep='\t', header=None)
+            regions = pd.read_csv(regions, sep="\t", header=None)
 
     else:
-        print ("Expecting type of list, pd.dataframe, str. Got: ",type(regions), regions)
+        print("Expecting type of list, pd.dataframe, str. Got: ", type(regions), regions)
 
-    regions.columns = ['Chromosome', 'Start', 'End'] + list(regions.columns)[3:]
+    regions.columns = ["Chromosome", "Start", "End"] + list(regions.columns)[3:]
     if width is not None:
         regions = resize_bed_df(regions, width, True)
     return regions
 
+
 def frags_to_insertions(data, split=False):
-    x = data.obsm['fragment_paired']
-    insertion = csr_matrix((np.ones(len(x.indices) * 2, dtype='uint16'),
-                            np.stack([x.indices, x.indices + x.data], axis=-1).reshape((-1)),
-                            x.indptr * 2), shape=x.shape)
+    x = data.obsm["fragment_paired"]
+    insertion = csr_matrix(
+        (
+            np.ones(len(x.indices) * 2, dtype="uint16"),
+            np.stack([x.indices, x.indices + x.data], axis=-1).reshape((-1)),
+            x.indptr * 2,
+        ),
+        shape=x.shape,
+    )
     insertion.sort_indices()
     insertion.sum_duplicates()
     if split:
-        indx = list(np.cumsum(data.uns['reference_sequences']['reference_seq_length']).astype('int'))
+        indx = list(
+            np.cumsum(data.uns["reference_sequences"]["reference_seq_length"]).astype("int")
+        )
         start = [0] + indx
         end = indx
         for chrom, start, end in zip(
-                data.uns['reference_sequences']['reference_seq_name'],
-                start,
-                end):
-            data.obsm['insertion_%s' % chrom] =  insertion[:, start:end].tocsc()
+            data.uns["reference_sequences"]["reference_seq_name"], start, end
+        ):
+            data.obsm["insertion_%s" % chrom] = insertion[:, start:end].tocsc()
 
     else:
-        data.obsm['insertion'] = insertion
+        data.obsm["insertion"] = insertion
     # data.obsm['insertion'] = insertion
     return data
+
 
 def check_snap_insertion(shift_left=0, shift_right=0):
     with tempfile.TemporaryDirectory() as tempdir:
@@ -235,15 +255,16 @@ def check_snap_insertion(shift_left=0, shift_right=0):
         for i in range(100):
             temp_fragments.write("chr1\t%d\t%d\tbarcode1\t1\n" % (4, 100))
         temp_fragments.close()
-        data = snap.pp.import_data(f"{tempdir}/temp_fragments.tsv.gz",
-                            chrom_sizes=snap.genome.hg38.chrom_sizes,
-                            min_num_fragments=0,
-                            shift_left=shift_left,
-                            shift_right=shift_right,
-                            # file='testabcdefg.h5ad'
-                            )
+        data = snap.pp.import_data(
+            f"{tempdir}/temp_fragments.tsv.gz",
+            chrom_sizes=snap.genome.hg38.chrom_sizes,
+            min_num_fragments=0,
+            shift_left=shift_left,
+            shift_right=shift_right,
+            # file='testabcdefg.h5ad'
+        )
         data = frags_to_insertions(data)
-        v = np.array(data.obsm['insertion'][0, :200].toarray()).reshape((-1))
+        v = np.array(data.obsm["insertion"][0, :200].toarray()).reshape((-1))
         # If true: The fixed version I compiled or they fixed it, else not fixed
     return v[100] == 100
 
@@ -254,11 +275,15 @@ def check_snap_insertion_old(shift_left=0, shift_right=0):
         temp_fragments.write("chr1\t%d\t%d\tbarcode1\n" % (4, 4))
     temp_fragments.close()
     sys.stdout.flush()
-    data = snap.pp.import_data("temp_fragments.tsv.gz",
-                               genome=snap.genome.hg38, min_num_fragments=0, min_tsse=0,
-                               shift_left=shift_left,
-                               shift_right=shift_right)
-    v = np.array(data.obsm['insertion'][0, :10].toarray()).reshape((-1))
+    data = snap.pp.import_data(
+        "temp_fragments.tsv.gz",
+        genome=snap.genome.hg38,
+        min_num_fragments=0,
+        min_tsse=0,
+        shift_left=shift_left,
+        shift_right=shift_right,
+    )
+    v = np.array(data.obsm["insertion"][0, :10].toarray()).reshape((-1))
     os.remove("temp_fragments.tsv.gz")
     # If true: The fixed version I compiled or they fixed it, else not fixed
     return v[4] == 200
@@ -268,11 +293,11 @@ def create_consistent_frags(pathToFrags, extra_plus_shift, extra_minus_shift):
     flag_ = check_snap_insertion()
     output = "temp.fragments.tsv.gz"
     if flag_ and extra_plus_shift == 0 and extra_minus_shift == 0:
-        if len(pathToFrags) == 1 :
+        if len(pathToFrags) == 1:
             return pathToFrags[0], False
         else:
-            command = "cat %s > %s" %(" ".join(pathToFrags), output)
-            print (command)
+            command = "cat %s > %s" % (" ".join(pathToFrags), output)
+            print(command)
             os.system(command)
             # for path in pathToFrags:
             #     command = 'sort -k4, 4 %s > %s' % (path, output)
@@ -280,12 +305,12 @@ def create_consistent_frags(pathToFrags, extra_plus_shift, extra_minus_shift):
             return output, True
     else:
         plus1_flag = 0 if flag_ else 1
-        print ("Fixing offset & merging fragments")
+        print("Fixing offset & merging fragments")
         for path in pathToFrags:
-            if '.gz' in path:
-                csv_file = gzip.open(path, 'rb')
+            if ".gz" in path:
+                csv_file = gzip.open(path, "rb")
             else:
-                csv_file = open(path, 'r')
+                csv_file = open(path, "r")
 
             reader = pd.read_csv(csv_file, chunksize=100000000, sep="\t", header=None)
             # chrom, start, end, fragments
@@ -293,26 +318,25 @@ def create_consistent_frags(pathToFrags, extra_plus_shift, extra_minus_shift):
             for chunk_fragments in reader:
                 chunk_fragments[1] += extra_plus_shift
                 chunk_fragments[2] += extra_minus_shift + plus1_flag
-                chunk_fragments.to_csv(output, index=False, header=None, sep='\t', mode='a')
+                chunk_fragments.to_csv(output, index=False, header=None, sep="\t", mode="a")
         return output, True
 
 
 def split_insertion_profile(csr_matrix_insertion, chrom, start, end, to_csc=False):
     # print ("Processing insertion profile")
     if to_csc:
-        return {chrom: csr_matrix_insertion[:, start:end].tocsc() for chrom, start, end in zip(
-            chrom,
-            start,
-            end)}
+        return {
+            chrom: csr_matrix_insertion[:, start:end].tocsc()
+            for chrom, start, end in zip(chrom, start, end)
+        }
     else:
-        return  {chrom: csr_matrix_insertion[:, start:end] for chrom,start, end in zip(
-        chrom,
-        start,
-        end)}
+        return {
+            chrom: csr_matrix_insertion[:, start:end]
+            for chrom, start, end in zip(chrom, start, end)
+        }
 
 
-def cell_grouping2cell_grouping_idx(printer,
-                                    cell_grouping: list[list[str]] | np.ndarray):
+def cell_grouping2cell_grouping_idx(printer, cell_grouping: list[list[str]] | np.ndarray):
     """
     Convert a cell grouping from string based to index based.
     E.g., you pass a list of lists of barcodes `[['ACAGTGGT,ACAGTGGT,ACTTGATG,BUENSS112'] , ['ACAGTGGT,ACAGTGGT,TACTAGTC,BUENSS112', 'ACAGTGGT,ACAGTGGT,TAGTGACT,BUENSS112','ACAGTGGT,ACAGTGGT,TCCGTCTT,BUENSS112']]`,
@@ -335,11 +359,9 @@ def cell_grouping2cell_grouping_idx(printer,
     # construct a mapping from uniq barcode name to its index
     dict1 = {b: i for i, b in zip(uniq_ix, uniq)}
     # and use that to turn string based matching to index based matching
-    cell_grouping_idx = [
-        [dict1[b] for b in barcodes]
-        for barcodes in cell_grouping
-    ]
+    cell_grouping_idx = [[dict1[b] for b in barcodes] for barcodes in cell_grouping]
     return cell_grouping_idx
+
 
 def df2cell_grouping(printer, barcodeGroups):
     """
@@ -374,6 +396,7 @@ def df2cell_grouping(printer, barcodeGroups):
         grouping.append(list(bar[groups == group]))
     return grouping, uniq_groups
 
+
 def valide_regions(bed: pd.DataFrame, genome, inplace=True):
 
     chromsize = genome.chrom_sizes
@@ -392,10 +415,9 @@ def valide_regions(bed: pd.DataFrame, genome, inplace=True):
         return valid
 
 
-def resize_bed_df(bed: pd.DataFrame,
-                  width:int=1000,
-                  copy:bool=True,
-                  center: str | None=None):
+def resize_bed_df(
+    bed: pd.DataFrame, width: int = 1000, copy: bool = True, center: str | None = None
+):
     """
     Resize a bed dataframe to a given width,
 
@@ -416,15 +438,14 @@ def resize_bed_df(bed: pd.DataFrame,
     """
     bed = deepcopy(bed) if copy else bed
     if center is None:
-        center = np.floor((bed.iloc[:, 1] + bed.iloc[:, 2]) / 2).astype('int')
-    
-    bed.iloc[:, 1] = np.floor(center - width / 2).astype('int')
-    bed.iloc[:, 2] = np.floor(center + width / 2).astype('int')
+        center = np.floor((bed.iloc[:, 1] + bed.iloc[:, 2]) / 2).astype("int")
+
+    bed.iloc[:, 1] = np.floor(center - width / 2).astype("int")
+    bed.iloc[:, 2] = np.floor(center + width / 2).astype("int")
     return bed
 
-def merge_overlapping_bed(bed: pd.DataFrame,
-                          min_requierd_bp:int = 250,
-                          copy:bool = True):
+
+def merge_overlapping_bed(bed: pd.DataFrame, min_requierd_bp: int = 250, copy: bool = True):
     """
     Merge overlapping entries in a bed dataframe
 
@@ -445,7 +466,7 @@ def merge_overlapping_bed(bed: pd.DataFrame,
     bed = deepcopy(bed) if copy else bed
     bed = pybedtools.BedTool.from_dataframe(bed)
     bed = bed.merge(d=-1 * min_requierd_bp).to_dataframe()
-    bed.columns = ['Chromosome', 'Start', 'End'] + list(bed.columns[3:])
+    bed.columns = ["Chromosome", "Start", "End"] + list(bed.columns[3:])
     return bed
 
 
@@ -457,32 +478,33 @@ def load_entire_hdf5(dct):
         ret[k] = load_entire_hdf5(v)
     return ret
 
+
 def dftopyranges(df):
     return pyranges.PyRanges(df)
 
 
 def df2regionidentifier(df):
-    if 'Chromosome' in df.columns and 'Start' in df.columns and 'End' in df.columns:
-        return np.array([f'{c}:{s}-{e}' for c, s, e in zip(df['Chromosome'], df['Start'], df['End'])])
-    elif 'chrom' in df.columns and 'start' in df.columns and 'end' in df.columns:
-        return np.array([f'{c}:{s}-{e}' for c, s, e in zip(df['chrom'], df['start'], df['end'])])
+    if "Chromosome" in df.columns and "Start" in df.columns and "End" in df.columns:
+        return np.array(
+            [f"{c}:{s}-{e}" for c, s, e in zip(df["Chromosome"], df["Start"], df["End"])]
+        )
+    elif "chrom" in df.columns and "start" in df.columns and "end" in df.columns:
+        return np.array([f"{c}:{s}-{e}" for c, s, e in zip(df["chrom"], df["start"], df["end"])])
     else:
         # assume first 3 columns are chrom, start, end
-        return np.array([f'{c}:{s}-{e}' for c, s, e in zip(df.iloc[:, 0], df.iloc[:, 1], df.iloc[:, 2])])
+        return np.array(
+            [f"{c}:{s}-{e}" for c, s, e in zip(df.iloc[:, 0], df.iloc[:, 1], df.iloc[:, 2])]
+        )
 
 
 # This function will fetch the existing entries in f
 # Make comparisons to the provided list
 # Then return the uniq stuff in the provided list, existing stuff, and the new stuff
-def Unify_meta_info(f,
-                    addition_feats=[],
-                    entries=['group', 'region'],
-                    dtypes=['str', 'str']
-                    ):
+def Unify_meta_info(f, addition_feats=[], entries=["group", "region"], dtypes=["str", "str"]):
     results = []
     for feat, entry, dtype in zip(addition_feats, entries, dtypes):
         if entry in f:
-            if dtype == 'str':
+            if dtype == "str":
                 existing = np.array(f[entry].asstr()[:])
             else:
                 existing = np.array(f[entry][:])
@@ -495,37 +517,46 @@ def Unify_meta_info(f,
 
     return tuple(results)
 
+
 def sort_region_identifier(regions_all):
-    regions_all = pd.DataFrame([re.split(':|-', xx) for xx in regions_all], columns=['Chromosome', 'Start', 'End'])
+    regions_all = pd.DataFrame(
+        [re.split(":|-", xx) for xx in regions_all],
+        columns=["Chromosome", "Start", "End"],
+    )
     regions_all = dftopyranges(regions_all).df
-    regions_all = ['%s:%d-%d' % (c, s, e) for c, s, e in
-                   zip(regions_all['Chromosome'], regions_all['Start'], regions_all['End'])]
+    regions_all = [
+        "%s:%d-%d" % (c, s, e)
+        for c, s, e in zip(regions_all["Chromosome"], regions_all["Start"], regions_all["End"])
+    ]
     return regions_all
 
 
 # Load TF binding / habitation prediction model
 def loadBindingScoreModel(h5Path):
-    with h5py.File(h5Path, 'r') as h5file:
-        footprintMean =np.array(h5file["footprint_mean"])
-        footprintSd =np.array(h5file["footprint_sd"])
+    with h5py.File(h5Path, "r") as h5file:
+        footprintMean = np.array(h5file["footprint_mean"])
+        footprintSd = np.array(h5file["footprint_sd"])
         weights = [np.array(h5file["weight_%d" % i]) for i in range(6)]
         weights = [torch.from_numpy(w).float() for w in weights]
     return_dict = {
-        'footprintMean': torch.from_numpy(footprintMean).float(),
-        'footprintSd': torch.from_numpy(footprintSd).float(),
-        'scales': [10, 20, 30, 50, 80, 100],
-        'weights': weights}
+        "footprintMean": torch.from_numpy(footprintMean).float(),
+        "footprintSd": torch.from_numpy(footprintSd).float(),
+        "scales": [10, 20, 30, 50, 80, 100],
+        "weights": weights,
+    }
 
     return return_dict
+
 
 # Load TF binding / habitation prediction model
 def loadBindingScoreModel_pt(h5Path):
     model = torch.jit.load(h5Path)
     model.eval()
     return_dict = {
-        'model': model,
-        'scales': [int(xx) for xx in model.scales],
-        'version': str(model.version)}
+        "model": model,
+        "scales": [int(xx) for xx in model.scales],
+        "version": str(model.version),
+    }
 
     return return_dict
 
@@ -534,13 +565,16 @@ def loadDispModel(h5Path):
     with h5py.File(h5Path, "r") as a:
         dispmodels = load_entire_hdf5(a)
         for model in dispmodels:
-            dispmodels[model]['modelWeights'] = [torch.from_numpy(dispmodels[model]['modelWeights'][key]).float() for
-                                                 key in ['ELT1', 'ELT2', 'ELT3', 'ELT4']]
+            dispmodels[model]["modelWeights"] = [
+                torch.from_numpy(dispmodels[model]["modelWeights"][key]).float()
+                for key in ["ELT1", "ELT2", "ELT3", "ELT4"]
+            ]
     return dispmodels
 
 
 def downloadDispModel():
     return None
+
 
 def downloadTFBSModel():
     return None

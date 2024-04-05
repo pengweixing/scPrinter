@@ -1,28 +1,30 @@
-from .utils import *
 import gc
+
+from .utils import *
+
 
 def strided_axis0(a, L):
     # Store the shape and strides info
     shp = a.shape
-    s  = a.strides
+    s = a.strides
 
     # Compute length of output array along the first axis
-    nd0 = shp[0]-L+1
+    nd0 = shp[0] - L + 1
 
     # Setup shape and strides for use with np.lib.stride_tricks.as_strided
     # and get (n+1) dim output array
-    shp_in = (nd0,L)+shp[1:]
+    shp_in = (nd0, L) + shp[1:]
     strd_in = (s[0],) + s
     return np.lib.stride_tricks.as_strided(a, shape=shp_in, strides=strd_in)
 
 
-def getPrecomputedBias(precomputed_bias_path,
-                       regions,
-                       savePath=None):
+def getPrecomputedBias(precomputed_bias_path, regions, savePath=None):
     regions = regionparser(regions)
-    chrom_list, start_list, end_list = np.array(regions['Chromosome']), \
-        np.array(regions['Start']).astype('int'), \
-        np.array(regions['End']).astype('int')
+    chrom_list, start_list, end_list = (
+        np.array(regions["Chromosome"]),
+        np.array(regions["Start"]).astype("int"),
+        np.array(regions["End"]).astype("int"),
+    )
     # print (chrom_list)
     uniq_chrom = np.unique(chrom_list)
     width = end_list[0] - start_list[0]
@@ -38,7 +40,7 @@ def getPrecomputedBias(precomputed_bias_path,
     #     final_result[mask] = bias_region_chrom
 
     final_result = np.zeros((len(regions), width))
-    with h5py.File(precomputed_bias_path, 'r') as dct:
+    with h5py.File(precomputed_bias_path, "r") as dct:
         for chrom in uniq_chrom:
             bias = np.array(dct[chrom])
             # bias = precomputed_bias[chrom]
@@ -51,7 +53,3 @@ def getPrecomputedBias(precomputed_bias_path,
         np.save(savePath, final_result)
     else:
         return final_result
-
-
-
-

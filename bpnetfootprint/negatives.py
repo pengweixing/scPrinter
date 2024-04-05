@@ -8,12 +8,10 @@ sampling of GC-matched negatives.
 
 import numpy
 import pandas
-import pyfaidx
 import pyBigWig
-
+import pyfaidx
+from scipy.stats import ks_2samp, rankdata
 from tqdm import tqdm
-from scipy.stats import rankdata
-from scipy.stats import ks_2samp
 
 
 def calculate_gc(sequence, width):
@@ -38,7 +36,7 @@ def calculate_gc(sequence, width):
         An array of GC percentages that range between 0 and 1.
     """
 
-    chars = ('C', 'G')
+    chars = ("C", "G")
     n = len(sequence)
     k = width // 2
 
@@ -52,8 +50,7 @@ def calculate_gc(sequence, width):
     return gc
 
 
-def calculate_gc_genomewide(fasta, bigwig, width, include_chroms=None,
-                            verbose=False):
+def calculate_gc_genomewide(fasta, bigwig, width, include_chroms=None, verbose=False):
     """Calculate GC percentages across an entire fasta file.
 
     This function takes in the string names of a fasta file to calculate
@@ -217,14 +214,12 @@ def extract_matching_loci(bed, bigwig, width, bin_width, verbose=False):
         bins.
     """
 
-    names = 'chrom', 'start', 'end'
-    peaks = pandas.read_csv(bed, delimiter="\t", usecols=(0, 1, 2),
-                            names=names)
+    names = "chrom", "start", "end"
+    peaks = pandas.read_csv(bed, delimiter="\t", usecols=(0, 1, 2), names=names)
     bw = pyBigWig.open(bigwig, "r")
 
     # Extract GC content from the given peaks and bin it
-    orig_values, masks = extract_values_and_masks(peaks, bw, width,
-                                                  verbose=verbose)
+    orig_values, masks = extract_values_and_masks(peaks, bw, width, verbose=verbose)
     values = ((orig_values + bin_width / 2) // bin_width).astype(int)
     value_bin, value_bin_counts = numpy.unique(values, return_counts=True)
 
@@ -248,7 +243,7 @@ def extract_matching_loci(bed, bigwig, width, bin_width, verbose=False):
                     continue
 
                 reservoirs[value].append((chrom, idx, length))
-                X[idx - width:idx + width] = -1
+                X[idx - width : idx + width] = -1
 
                 n_selected += 1
                 if n_selected == count:
@@ -272,12 +267,10 @@ def extract_matching_loci(bed, bigwig, width, bin_width, verbose=False):
         if count == 0:
             continue
 
-        weights = numpy.array([idx[2] for idx in reservoirs[value]],
-                              dtype='float64')
+        weights = numpy.array([idx[2] for idx in reservoirs[value]], dtype="float64")
         weights = weights / weights.sum()
 
-        r_idxs = numpy.random.choice(len(weights), size=count, replace=False,
-                                     p=weights)
+        r_idxs = numpy.random.choice(len(weights), size=count, replace=False, p=weights)
 
         chosen_idxs[value] = [reservoirs[value][idx] for idx in r_idxs]
         chosen_values.extend([value] * count)
@@ -295,11 +288,9 @@ def extract_matching_loci(bed, bigwig, width, bin_width, verbose=False):
     matched_loci = pandas.DataFrame(matched_loci, columns=names)
 
     if verbose:
-        matched_values, _ = extract_values_and_masks(matched_loci, bw, width,
-                                                     verbose=verbose)
+        matched_values, _ = extract_values_and_masks(matched_loci, bw, width, verbose=verbose)
 
         stats = ks_2samp(orig_values, matched_values)
-        print("GC paired t-test: {:3.3}, {:3.3}".format(stats.statistic,
-                                                        stats.pvalue))
+        print("GC paired t-test: {:3.3}, {:3.3}".format(stats.statistic, stats.pvalue))
 
     return matched_loci

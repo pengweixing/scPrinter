@@ -43,4 +43,3 @@ Tutorial Datasets
     :toctree: _autosummary
 
     datasets.BMMCTutorial
-

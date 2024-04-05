@@ -1,16 +1,19 @@
+from copy import deepcopy
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tqdm.auto import tqdm, trange
-from .Functions import *
-from .Modules import *
-from .Baseline_Modules import *
-from .minimum_footprint import *
-from scipy.stats import pearsonr
 import wandb
-from copy import deepcopy
+from scipy.stats import pearsonr
 from sklearn.linear_model import LinearRegression
+from tqdm.auto import tqdm, trange
+
+from .Baseline_Modules import *
+from .Functions import *
+from .minimum_footprint import *
+from .Modules import *
+
 
 def predict(self, X, batch_size=64, verbose=False):
     """
@@ -22,7 +25,7 @@ def predict(self, X, batch_size=64, verbose=False):
     device = next(self.parameters()).device
     with torch.no_grad():
         for i in trange(0, len(X), batch_size, disable=not verbose):
-            X_batch = X[i:i + batch_size].to(device)
+            X_batch = X[i : i + batch_size].to(device)
             X_foot, X_score = self(X_batch)
             pred_footprints.append(X_foot.detach().cpu())
             pred_scores.append(X_score.detach().cpu())
@@ -30,13 +33,11 @@ def predict(self, X, batch_size=64, verbose=False):
         pred_scores = torch.cat(pred_scores, dim=0)
     return pred_footprints, pred_scores
 
+
 @torch.no_grad()
-def validation_step_footprint(model,
-                    validation_data,
-                    validation_size,
-                    dispmodel,
-                    modes,
-                    linear_correction=False):
+def validation_step_footprint(
+    model, validation_data, validation_size, dispmodel, modes, linear_correction=False
+):
     device = next(model.parameters()).device
     size = 0
     profile_pearson = []
@@ -47,7 +48,7 @@ def validation_step_footprint(model,
     mean_pred_score, mean_y, mean_pred_coverage, mean_coverage = 0, 0, 0, 0
     if validation_size is None:
         validation_size = len(validation_data)
-    bar = trange(validation_size, desc=' - (Validation)', leave=False, dynamic_ncols=True)
+    bar = trange(validation_size, desc=" - (Validation)", leave=False, dynamic_ncols=True)
     total_len = 0
     for data in validation_data:
         if len(data) == 2:
@@ -68,15 +69,14 @@ def validation_step_footprint(model,
         pred_score, pred_coverage = model(X, cell)
         coverage = torch.log1p(y[:, 0].sum(dim=-1)) if norm_cov is None else norm_cov
         # print (coverage.min(), coverage.max())
-        y = multiscaleFoot(y[:, 0],
-                            y[:, 1],
-                            modes,
-                            dispmodel)
+        y = multiscaleFoot(y[:, 0], y[:, 1], modes, dispmodel)
         mask = ~torch.isnan(y)
         # y = y - torch.nansum(y, dim=(1, 2), keepdim=True) / (y.shape[1] * y.shape[2])
 
         y = torch.nan_to_num(y, nan=0)
-        loss_ = F.mse_loss(pred_score[mask], y[mask]) #+ F.mse_loss(coverage, pred_coverage) * coverage_weight
+        loss_ = F.mse_loss(
+            pred_score[mask], y[mask]
+        )  # + F.mse_loss(coverage, pred_coverage) * coverage_weight
         pred_score, y = pred_score.reshape((len(pred_score), -1)), y.reshape((len(y), -1))
         val_loss[0] += loss_.item()
         corr = batch_pearson_correlation(pred_score, y).detach().cpu()[:, None]
@@ -103,10 +103,14 @@ def validation_step_footprint(model,
     else:
         profile_pearson = np.array([0])
 
-    pred_score, y = (torch.cat(across_batch_pearson[0], dim=0),
-                     torch.cat(across_batch_pearson[1], dim=0))
-    pred_coverage, coverage = (torch.cat(across_batch_pearson_coverage[1], dim=0),
-                               torch.cat(across_batch_pearson_coverage[0], dim=0))
+    pred_score, y = (
+        torch.cat(across_batch_pearson[0], dim=0),
+        torch.cat(across_batch_pearson[1], dim=0),
+    )
+    pred_coverage, coverage = (
+        torch.cat(across_batch_pearson_coverage[1], dim=0),
+        torch.cat(across_batch_pearson_coverage[0], dim=0),
+    )
 
     mean_pred_score /= total_len
     mean_y /= total_len
@@ -115,46 +119,50 @@ def validation_step_footprint(model,
     if linear_correction:
         model = LinearRegression()
 
-        a,b = pred_score.cpu().numpy().reshape((-1)), y.cpu().numpy().reshape((-1))
+        a, b = pred_score.cpu().numpy().reshape((-1)), y.cpu().numpy().reshape((-1))
         if len(a) >= 1000000:
             idx = np.random.choice(len(a), 1000000, replace=False)
             a = a[idx]
             b = b[idx]
-        mask = ((~np.isnan(a)) & (~np.isnan(b))
-                & (~np.isinf(a)) & (~np.isinf(b)))
+        mask = (~np.isnan(a)) & (~np.isnan(b)) & (~np.isinf(a)) & (~np.isinf(b))
         a, b = a[mask], b[mask]
         print(a.min(), a.max(), b.min(), b.max())
         model.fit(a.reshape((-1, 1)), b.reshape((-1, 1)))
         weight, bias = model.coef_[0, 0], model.intercept_[0]
-        print ("Linear correction", weight, bias)
-    across_corr = [pearson_correlation(pred_score, y, mean_pred_score, mean_y),
-                   pearson_correlation(pred_coverage, coverage, mean_pred_coverage, mean_coverage)]
+        print("Linear correction", weight, bias)
+    across_corr = [
+        pearson_correlation(pred_score, y, mean_pred_score, mean_y),
+        pearson_correlation(pred_coverage, coverage, mean_pred_coverage, mean_coverage),
+    ]
     if not linear_correction:
         return val_loss, profile_pearson, across_corr
     else:
         return val_loss, profile_pearson, across_corr, weight, bias
+
 
 class scFootprintBPNet(nn.Module):
     """
     This defines the bindingnet model
     """
 
-    def __init__(self,
-                 dna_cnn_model=None,
-                 hidden_layer_model=None,
-                 profile_cnn_model=None,
-                 dna_len=2114,
-                 output_len=1000,
-                 embeddings=None,
-                 rank=8,
-                 hidden_dim=None,
-                 lora_dna_cnn=False,
-                 lora_dilated_cnn=False,
-                 lora_pff_cnn=False,
-                 lora_output_cnn=False,
-                 lora_count_cnn=False,
-                 method='lora',
-                 n_lora_layers=0):
+    def __init__(
+        self,
+        dna_cnn_model=None,
+        hidden_layer_model=None,
+        profile_cnn_model=None,
+        dna_len=2114,
+        output_len=1000,
+        embeddings=None,
+        rank=8,
+        hidden_dim=None,
+        lora_dna_cnn=False,
+        lora_dilated_cnn=False,
+        lora_pff_cnn=False,
+        lora_output_cnn=False,
+        lora_count_cnn=False,
+        method="lora",
+        n_lora_layers=0,
+    ):
         super().__init__()
         self.dna_cnn_model = dna_cnn_model
         self.hidden_layer_model = hidden_layer_model
@@ -163,12 +171,11 @@ class scFootprintBPNet(nn.Module):
         self.output_len = output_len
 
         if embeddings is not None:
-            self.embeddings = nn.Embedding(embeddings.shape[0],
-                                           embeddings.shape[1])
+            self.embeddings = nn.Embedding(embeddings.shape[0], embeddings.shape[1])
             self.embeddings.weight.data = torch.from_numpy(embeddings).float()
             self.embeddings.weight.requires_grad = False
 
-        if method == 'lora':
+        if method == "lora":
             wrapper = Conv1dLoRA
         else:
             wrapper = BiasInjection
@@ -180,7 +187,7 @@ class scFootprintBPNet(nn.Module):
                 B_embedding=self.embeddings,
                 r=rank,
                 hidden_dim=hidden_dim,
-                n_layers=n_lora_layers
+                n_layers=n_lora_layers,
             )
 
         hidden_layers = self.hidden_layer_model.layers
@@ -192,7 +199,7 @@ class scFootprintBPNet(nn.Module):
                     B_embedding=self.embeddings,
                     r=rank,
                     hidden_dim=hidden_dim,
-                    n_layers=n_lora_layers
+                    n_layers=n_lora_layers,
                 )
             if lora_pff_cnn:
                 hidden_layers[i].module.conv2 = wrapper(
@@ -201,7 +208,7 @@ class scFootprintBPNet(nn.Module):
                     B_embedding=self.embeddings,
                     r=rank,
                     hidden_dim=hidden_dim,
-                    n_layers=n_lora_layers
+                    n_layers=n_lora_layers,
                 )
 
         if lora_output_cnn:
@@ -211,7 +218,7 @@ class scFootprintBPNet(nn.Module):
                 B_embedding=self.embeddings,
                 r=rank,
                 hidden_dim=hidden_dim,
-                n_layers=n_lora_layers
+                n_layers=n_lora_layers,
             )
         if isinstance(self.profile_cnn_model.linear, nn.Linear):
             print("translating linear into conv1d")
@@ -230,10 +237,11 @@ class scFootprintBPNet(nn.Module):
                 B_embedding=self.embeddings,
                 r=1,
                 hidden_dim=hidden_dim,
-                n_layers=n_lora_layers
+                n_layers=n_lora_layers,
             )
+
     def return_origin(self):
-        self = self.to('cpu')
+        self = self.to("cpu")
         if isinstance(self.profile_cnn_model.linear, nn.Linear):
             print("translating linear into conv1d")
             weight = self.profile_cnn_model.linear.weight.data
@@ -254,7 +262,9 @@ class scFootprintBPNet(nn.Module):
             for layer in model_clone.hidden_layer_model.layers:
                 layer.module.conv2 = layer.module.conv2.layer
         if not isinstance(model_clone.profile_cnn_model.conv_layer, Conv1dWrapper):
-            model_clone.profile_cnn_model.conv_layer = model_clone.profile_cnn_model.conv_layer.layer
+            model_clone.profile_cnn_model.conv_layer = (
+                model_clone.profile_cnn_model.conv_layer.layer
+            )
         if not isinstance(model_clone.profile_cnn_model.linear, Conv1dWrapper):
             model_clone.profile_cnn_model.linear = model_clone.profile_cnn_model.linear.layer
 
@@ -282,19 +292,20 @@ class scFootprintBPNet(nn.Module):
             for layer in model_clone.hidden_layer_model.layers:
                 layer.module.conv2 = layer.module.conv2.collapse_layer(cell)
         if not isinstance(model_clone.profile_cnn_model.conv_layer, Conv1dWrapper):
-            model_clone.profile_cnn_model.conv_layer = model_clone.profile_cnn_model.conv_layer.collapse_layer(cell)
+            model_clone.profile_cnn_model.conv_layer = (
+                model_clone.profile_cnn_model.conv_layer.collapse_layer(cell)
+            )
         if not isinstance(model_clone.profile_cnn_model.linear, Conv1dWrapper):
-            model_clone.profile_cnn_model.linear = model_clone.profile_cnn_model.linear.collapse_layer(cell)
+            model_clone.profile_cnn_model.linear = (
+                model_clone.profile_cnn_model.linear.collapse_layer(cell)
+            )
         if turn_on_grads:
             for p in model_clone.parameters():
                 p.requires_grad = True
 
         return model_clone
 
-
-    def forward(self, X,
-                cells=None,
-                output_len=None, modes=None):
+    def forward(self, X, cells=None, output_len=None, modes=None):
         if output_len is None:
             output_len = self.output_len
         # get the motifs!
@@ -304,22 +315,19 @@ class scFootprintBPNet(nn.Module):
         X = self.hidden_layer_model(X, cells=cells)
 
         # get the profile
-        score = self.profile_cnn_model(X,
-                                       cells=cells,
-                                       output_len=output_len,
-                                       modes=modes)
+        score = self.profile_cnn_model(X, cells=cells, output_len=output_len, modes=modes)
 
         return score
 
     def load_train_state_dict(self, ema, optimizer, scaler, savename):
         print("Nan training loss, load last OK-ish checkpoint")
         device = next(self.parameters()).device
-        print (device)
+        print(device)
         # self.cpu()
         checkpoint = torch.load(savename)
-        self.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        scaler.load_state_dict(checkpoint['scaler'])
+        self.load_state_dict(checkpoint["state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scaler.load_state_dict(checkpoint["scaler"])
         # self.to(device)
         # optimizer = optimizer.to(device)
         # scaler = scaler.to(device)
@@ -329,27 +337,30 @@ class scFootprintBPNet(nn.Module):
         # if ema:
         #     # ema = ema.cpu()
         #     ema = torch.load(savename + '.ema.pt')
-            # ema = ema.to(device)
+        # ema = ema.to(device)
         return ema, optimizer, scaler
 
-    def fit(self,
-            dispmodel,
-            training_data,
-            validation_data=None,
-            validation_size=None,
-            max_epochs=100,
-            optimizer=None,
-            scheduler=None,
-            validation_freq=100,
-            early_stopping=False,
-            return_best=True, savename='model',
-            modes=np.arange(2,101,1),
-            downsample=None,
-            ema=None,
-            use_amp=False,
-            use_wandb=False,
-            accumulate_grad=1,
-            batch_size=None):
+    def fit(
+        self,
+        dispmodel,
+        training_data,
+        validation_data=None,
+        validation_size=None,
+        max_epochs=100,
+        optimizer=None,
+        scheduler=None,
+        validation_freq=100,
+        early_stopping=False,
+        return_best=True,
+        savename="model",
+        modes=np.arange(2, 101, 1),
+        downsample=None,
+        ema=None,
+        use_amp=False,
+        use_wandb=False,
+        accumulate_grad=1,
+        batch_size=None,
+    ):
         """
         This is the fit function for BPNet
         Parameters
@@ -375,7 +386,9 @@ class scFootprintBPNet(nn.Module):
         random_modes = modes
         device = next(self.parameters()).device
         loss_history = []
-        assert validation_size is not None or validation_data is not None, "Either validation_size or validation_data should be provided"
+        assert (
+            validation_size is not None or validation_data is not None
+        ), "Either validation_size or validation_data should be provided"
 
         if validation_data is None:
             validation_data = training_data
@@ -384,20 +397,23 @@ class scFootprintBPNet(nn.Module):
         if validation_freq is None:
             validation_freq = len(training_data)
         if use_amp:
-            print ("Using amp")
+            print("Using amp")
         scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
         # min_scale = 128
         for epoch in range(max_epochs):
-            bar = trange(validation_freq, desc=' - (Training) {epoch}'.format(
-                epoch=epoch + 1), leave=False, dynamic_ncols=True)
+            bar = trange(
+                validation_freq,
+                desc=" - (Training) {epoch}".format(epoch=epoch + 1),
+                leave=False,
+                dynamic_ncols=True,
+            )
             moving_avg_loss = 0
             iteration = 0
-
 
             training_index_all = np.random.permutation(len(training_data))
             training_data_epoch_loader = training_data.resample()
             for data in training_data_epoch_loader:
-                with (torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=use_amp)):
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
                     random_modes = np.random.permutation(modes)[:30]
                     select_index = torch.as_tensor([index_all.index(mode) for mode in random_modes])
                     if len(data) == 2:
@@ -418,14 +434,9 @@ class scFootprintBPNet(nn.Module):
 
                     atac = y[:, 0]
                     if downsample is not None:
-                        atac = F.dropout(atac, 1-downsample, training=self.training)
+                        atac = F.dropout(atac, 1 - downsample, training=self.training)
 
-
-
-                    footprints = multiscaleFoot(atac,
-                                                y[:, 1],
-                                                random_modes,
-                                                dispmodel)
+                    footprints = multiscaleFoot(atac, y[:, 1], random_modes, dispmodel)
                     mask = ~torch.isnan(footprints)
                     # footprints = footprints - torch.nansum(footprints, dim=(1,2), keepdim=True) / (footprints.shape[1] * footprints.shape[2])
                     if norm_cov is not None:
@@ -435,34 +446,30 @@ class scFootprintBPNet(nn.Module):
                         # footprints[coverage < 10] = torch.nan
                         coverage = torch.log1p(coverage)
 
+                    pred_score, pred_coverage = self.forward(X, cell, modes=select_index)
 
-
-                    pred_score, pred_coverage = self.forward(X,
-                                                             cell,
-                                                             modes=select_index)
-
-                    desc_str = ' - (Training) {epoch}'.format(
-                        epoch=epoch + 1)
+                    desc_str = " - (Training) {epoch}".format(epoch=epoch + 1)
 
                     loss_footprint = F.mse_loss(pred_score[mask], footprints[mask])
                     desc_str += " Footprint Loss: {loss:.2f}".format(loss=loss_footprint.item())
 
-                    loss_coverage = F.mse_loss(coverage,
-                                       pred_coverage)
+                    loss_coverage = F.mse_loss(coverage, pred_coverage)
                     desc_str += " Coverage Loss: {loss:.2f}".format(loss=loss_coverage.item())
 
                     loss = (loss_footprint + loss_coverage) / accumulate_grad
                     if np.isnan(loss.item()):
-                        ema, optimizer, scaler = self.load_train_state_dict(ema, optimizer, scaler, savename)
+                        ema, optimizer, scaler = self.load_train_state_dict(
+                            ema, optimizer, scaler, savename
+                        )
                         continue
 
                 scaler.scale(loss).backward()
                 moving_avg_loss += loss_footprint.item()
                 if (iteration + 1) % accumulate_grad == 0:
                     scaler.unscale_(
-                        optimizer)  # Unscale gradients for clipping without inf/nan gradients affecting the model
+                        optimizer
+                    )  # Unscale gradients for clipping without inf/nan gradients affecting the model
                     # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5.0)  # Adjust max_norm accordingly
-
 
                     scaler.step(optimizer)
                     scaler.update()
@@ -480,24 +487,26 @@ class scFootprintBPNet(nn.Module):
                 if iteration >= validation_freq:
                     break
 
-            print(' - (Training) {epoch} Loss: {loss:.2f}'.format(
-                    epoch=epoch + 1,
-                    loss=moving_avg_loss / iteration))
-            print ("Learning rate", optimizer.param_groups[0]['lr'])
+            print(
+                " - (Training) {epoch} Loss: {loss:.2f}".format(
+                    epoch=epoch + 1, loss=moving_avg_loss / iteration
+                )
+            )
+            print("Learning rate", optimizer.param_groups[0]["lr"])
 
             bar.close()
             self.eval()
 
-            val_loss, profile_pearson, across_pearson = validation_step_footprint(self,
-                                                                                  validation_data,
-                                                                                  validation_size,
-                                                                                  dispmodel,
-                                                                                  modes)
+            val_loss, profile_pearson, across_pearson = validation_step_footprint(
+                self, validation_data, validation_size, dispmodel, modes
+            )
 
             val_loss_all = np.sum(val_loss)
             if np.isnan(val_loss_all):
-                print ("Nan loss, load last OK-ish checkpoint")
-                ema, optimizer, scaler = self.load_train_state_dict(ema, optimizer, scaler, savename)
+                print("Nan loss, load last OK-ish checkpoint")
+                ema, optimizer, scaler = self.load_train_state_dict(
+                    ema, optimizer, scaler, savename
+                )
                 # optimizer.load_state_dict(torch.load(savename)['optimizer'])
                 # wandb.log({"train/train_loss": np.nan,
                 #             "val/val_loss": np.nan,
@@ -508,20 +517,21 @@ class scFootprintBPNet(nn.Module):
                 #            "epoch": epoch})
 
                 # break
-            print(' - (Validation) {epoch} \
-                        Loss: {loss:.5f}'.format(
-                epoch=epoch + 1, loss=val_loss_all))
+            print(
+                " - (Validation) {epoch} \
+                        Loss: {loss:.5f}".format(
+                    epoch=epoch + 1, loss=val_loss_all
+                )
+            )
             print("Profile pearson", profile_pearson)
             print("Across peak pearson", across_pearson)
 
             if ema:
                 ema.eval()
                 ema.ema_model.eval()
-                val_loss, profile_pearson, across_pearson = validation_step_footprint(ema.ema_model,
-                                                           validation_data,
-                                                           validation_size,
-                                                             dispmodel,
-                                                            modes)
+                val_loss, profile_pearson, across_pearson = validation_step_footprint(
+                    ema.ema_model, validation_data, validation_size, dispmodel, modes
+                )
                 if np.sum(val_loss) > val_loss_all:
                     # ema not converged yet:
                     early_stopping_counter = 0
@@ -530,7 +540,9 @@ class scFootprintBPNet(nn.Module):
 
                 if np.isnan(val_loss_all):
                     print("Nan loss, load last OK-ish checkpoint")
-                    ema, optimizer, scaler = self.load_train_state_dict(ema, optimizer, scaler, savename)
+                    ema, optimizer, scaler = self.load_train_state_dict(
+                        ema, optimizer, scaler, savename
+                    )
                     # print("Nan loss")
                     # wandb.log({"train/train_loss": np.nan,
                     #            "val/val_loss": np.nan,
@@ -540,55 +552,61 @@ class scFootprintBPNet(nn.Module):
                     #            "val/across_pearson_coverage": np.nan,
                     #            "epoch": epoch})
                     # break
-                print(' - (Validation) {epoch} \
-                Loss: {loss:.5f}'.format(
-                    epoch=epoch + 1, loss=val_loss_all))
-                print ("EMA Profile pearson", profile_pearson)
+                print(
+                    " - (Validation) {epoch} \
+                Loss: {loss:.5f}".format(
+                        epoch=epoch + 1, loss=val_loss_all
+                    )
+                )
+                print("EMA Profile pearson", profile_pearson)
                 print("EMA Across peak pearson", across_pearson)
                 ema.train()
 
-
-
             self.train()
 
-            loss_history.append([moving_avg_loss/ iteration, val_loss_all])
+            loss_history.append([moving_avg_loss / iteration, val_loss_all])
 
             if val_loss_all < best_loss:
-                print ("best loss", val_loss_all)
+                print("best loss", val_loss_all)
                 best_loss = val_loss_all
                 early_stopping_counter = 0
                 checkpoint = {
-                    'epoch': epoch + 1,
-                    'state_dict': self.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scaler': scaler.state_dict(),
-                    'ema': ema.state_dict() if ema else None
+                    "epoch": epoch + 1,
+                    "state_dict": self.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scaler": scaler.state_dict(),
+                    "ema": ema.state_dict() if ema else None,
                 }
                 torch.save(checkpoint, savename)
-                torch.save(self, savename + '.model.pt')
+                torch.save(self, savename + ".model.pt")
                 if ema:
-                    torch.save(ema, savename + '.ema.pt')
-                    torch.save(ema.ema_model, savename + '.ema_model.pt')
+                    torch.save(ema, savename + ".ema.pt")
+                    torch.save(ema.ema_model, savename + ".ema_model.pt")
             else:
                 early_stopping_counter += 1
             if early_stopping:
                 if early_stopping_counter >= early_stopping:
-                    print('Early stopping')
+                    print("Early stopping")
                     break
 
             if use_wandb:
-                wandb.log({"train/train_loss": moving_avg_loss / iteration,
-                           "val/val_loss": val_loss_all,
-                           "val/best_val_loss": best_loss,
-                           "val/profile_pearson": profile_pearson,
-                           "val/across_pearson_footprint": across_pearson[0],
-                           "val/across_pearson_coverage": across_pearson[1],
-                           "epoch": epoch})
+                wandb.log(
+                    {
+                        "train/train_loss": moving_avg_loss / iteration,
+                        "val/val_loss": val_loss_all,
+                        "val/best_val_loss": best_loss,
+                        "val/profile_pearson": profile_pearson,
+                        "val/across_pearson_footprint": across_pearson[0],
+                        "val/across_pearson_coverage": across_pearson[1],
+                        "epoch": epoch,
+                    }
+                )
 
         if return_best:
-            self.load_state_dict(torch.load(savename)['state_dict'])
-            print ("loaded best model")
+            self.load_state_dict(torch.load(savename)["state_dict"])
+            print("loaded best model")
 
         return epoch, loss_history
+
     def predict(self, *args, **kwargs):
         return predict(self, *args, **kwargs)

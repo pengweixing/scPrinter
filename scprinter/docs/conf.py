@@ -1,29 +1,29 @@
 # -- Path setup --------------------------------------------------------------
 
+import os
 import re
+import subprocess
 import sys
 import warnings
-import os
-import subprocess
 
 import scprinter as scp
 
 # -- Project information -----------------------------------------------------
 
-project = 'scprinter'
-author = 'Ruochi Zhang, Yan Hu'
+project = "scprinter"
+author = "Ruochi Zhang, Yan Hu"
 
 # The short X.Y version (including .devXXXX, rcX, b1 suffixes if present)
-version = re.sub(r'(\d+\.\d+)\.\d+(.*)', r'\1\2', scp.__version__)
-version = re.sub(r'(\.dev\d+).*?$', r'\1', version)
+version = re.sub(r"(\d+\.\d+)\.\d+(.*)", r"\1\2", scp.__version__)
+version = re.sub(r"(\.dev\d+).*?$", r"\1", version)
 # The full version, including alpha/beta/rc tags.
 release = scp.__version__
 print("%s %s" % (version, release))
 
 # -- General configuration ---------------------------------------------------
 
-suppress_warnings = ['ref.citation']
-default_role = 'code'
+suppress_warnings = ["ref.citation"]
+default_role = "code"
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
@@ -44,37 +44,37 @@ extensions = [
 ]
 
 source_suffix = {
-    '.rst': 'restructuredtext',
-    '.txt': 'markdown',
-    '.md': 'markdown',
+    ".rst": "restructuredtext",
+    ".txt": "markdown",
+    ".md": "markdown",
 }
 
 myst_enable_extensions = [
     "amsmath",
-    #"colon_fence",
-    #"deflist",
+    # "colon_fence",
+    # "deflist",
     "dollarmath",
-    #"fieldlist",
-    #"html_admonition",
-    #"html_image",
-    #"linkify",
-    #"replacements",
-    #"smartquotes",
-    #"strikethrough",
-    #"substitution",
-    #"tasklist",
+    # "fieldlist",
+    # "html_admonition",
+    # "html_image",
+    # "linkify",
+    # "replacements",
+    # "smartquotes",
+    # "strikethrough",
+    # "substitution",
+    # "tasklist",
 ]
 
 # Generate the API documentation when building
 autosummary_generate = True
-autodoc_member_order = 'bysource'
+autodoc_member_order = "bysource"
 # autodoc_default_flags = ['members']
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = False
 napoleon_use_rtype = True  # having a separate entry generally helps readability
 napoleon_use_param = True
-napoleon_custom_sections = [('Params', 'Parameters')]
+napoleon_custom_sections = [("Params", "Parameters")]
 todo_include_todos = False
 
 intersphinx_mapping = {
@@ -95,25 +95,25 @@ intersphinx_mapping = {
     "sklearn": ("https://scikit-learn.org/stable/", None),
 }
 
-smv_branch_whitelist = r'main'  # Include all branches
+smv_branch_whitelist = r"main"  # Include all branches
 
 # Add any paths that contain templates here, relative to this directory.
-templates_path = ['_templates']
+templates_path = ["_templates"]
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 
 # -- Options for HTML output -------------------------------------------------
 
-html_theme = 'pydata_sphinx_theme'
+html_theme = "pydata_sphinx_theme"
 html_show_sphinx = False
 html_show_sourcelink = False
-html_static_path = ['_static']
+html_static_path = ["_static"]
 html_css_files = [
-    'css/custom.css',
+    "css/custom.css",
 ]
 html_logo = "_static/logo.png"
 html_favicon = "_static/logo.png"
@@ -135,6 +135,7 @@ html_theme_options = {
 # commit = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('ascii')
 commit = "main"
 code_url = f"https:/github.com/broadinstitute/PRINT/blob/{commit}"
+
 
 # based on numpy doc/source/conf.py
 def linkcode_resolve(domain, info):

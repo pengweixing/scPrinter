@@ -2,41 +2,45 @@
 Scripts adapted from 10x motif-matching
 Tools for analyzing motifs in the genome.
 """
+
 from __future__ import annotations
+
+import itertools
 import tempfile
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from functools import partial
+from pathlib import Path
+
 import MOODS
+import MOODS.parsers
 import MOODS.scan
 import MOODS.tools
-import MOODS.parsers
 import numpy as np
 import pandas as pd
 from Bio import motifs
-from tqdm.auto import tqdm, trange
-from . import genome
-from .datasets import JASPAR2022_core, CisBP_Human, CisBPJASPA
-from .utils import regionparser
 from pyfaidx import Fasta
-from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
-from functools import partial
-import time
-import itertools
-from pathlib import Path
+from tqdm.auto import tqdm, trange
 from typing_extensions import Literal
+
+from . import genome
+from .datasets import CisBP_Human, CisBPJASPA, JASPAR2022_core
+from .utils import regionparser
+
 
 def consecutive(data, stepsize=1):
     return np.split(data, np.where(np.diff(data) != stepsize)[0] + 1)
+
 
 def thresholds_from_p(m, bg, pvalue):
     return MOODS.tools.threshold_from_p(m, bg, pvalue)
 
 
 class PFM:
-    def __init__(self,
-                 name,
-                 counts):
+    def __init__(self, name, counts):
         self.name = name
         self.counts = counts
-        self.length = len(counts['A'])
+        self.length = len(counts["A"])
 
 
 def parse_jaspar(file_path):
@@ -45,81 +49,104 @@ def parse_jaspar(file_path):
     record = None
 
     # Open the file for reading
-    with open(file_path, 'r') as file:
+    with open(file_path, "r") as file:
         for line in file:
             line = line.strip()  # Remove leading/trailing whitespaces
-            if line.startswith('>'):  # Record name line
+            if line.startswith(">"):  # Record name line
                 # Save the previous record if it exists
                 if record:
-                    records.append(PFM(record['name'], record['weights']))
+                    records.append(PFM(record["name"], record["weights"]))
                 # Start a new record
-                record = {'name': line[1:].split(' ')[-1], 'weights': {'A': [], 'C': [], 'G': [], 'T': []}}
+                record = {
+                    "name": line[1:].split(" ")[-1],
+                    "weights": {"A": [], "C": [], "G": [], "T": []},
+                }
             elif len(line) > 0:
                 # Parse the weight line
-                nucleotide, values_str = line.split(' ', 1)
+                nucleotide, values_str = line.split(" ", 1)
                 # print (nucleotide)
                 # print (values_str.strip('[]').split())
-                values = list(map(float, values_str.strip(' ').strip('[]').split()))
+                values = list(map(float, values_str.strip(" ").strip("[]").split()))
                 if record:
-                    record['weights'][nucleotide] = values
+                    record["weights"][nucleotide] = values
 
         # Don't forget to add the last record after exiting the loop
         if record:
-            records.append(PFM(record['name'], record['weights']))
+            records.append(PFM(record["name"], record["weights"]))
 
     return records
 
 
-def _jaspar_to_moods_matrix(jaspar_motif, bg, pseudocount, mode='motifmatchr'):
+def _jaspar_to_moods_matrix(jaspar_motif, bg, pseudocount, mode="motifmatchr"):
 
-    with (tempfile.NamedTemporaryFile() as fn):
+    with tempfile.NamedTemporaryFile() as fn:
         f = open(fn.name, "w")
-        for base in 'ACGT':
+        for base in "ACGT":
             line = " ".join(str(x) for x in jaspar_motif.counts[base])
             f.write(line + "\n")
 
         f.close()
-        if mode != 'motifmatchr':
+        if mode != "motifmatchr":
             m = MOODS.parsers.pfm_to_log_odds(fn.name, bg, pseudocount, 2)
         else:
             even = [0.25, 0.25, 0.25, 0.25]
-            m =  MOODS.parsers.pfm_to_log_odds(fn.name, even, pseudocount, 2)
+            m = MOODS.parsers.pfm_to_log_odds(fn.name, even, pseudocount, 2)
             m = [tuple(m[i] - (np.log2(0.25) - np.log2(bg[i]))) for i in range(len(bg))]
         return m
 
 
-def global_scan(seq, motifs_length, motifs_name, chr, start, end, peak_idx, tfs, clean, split_tfs, strand):
+def global_scan(
+    seq,
+    motifs_length,
+    motifs_name,
+    chr,
+    start,
+    end,
+    peak_idx,
+    tfs,
+    clean,
+    split_tfs,
+    strand,
+):
     global scanner
     scan_res = scanner.scan(str(seq))
     results = [[[xxx.pos, xxx.score] for xxx in xx] for xx in scan_res]
 
-    return _parse_scan_results_all(results,
-                                   motifs_length, motifs_name,
-                                   {'chr': chr, 'start': start, 'end': end, 'index': peak_idx},
-                                   tfs, clean, split_tfs, strand)
+    return _parse_scan_results_all(
+        results,
+        motifs_length,
+        motifs_name,
+        {"chr": chr, "start": start, "end": end, "index": peak_idx},
+        tfs,
+        clean,
+        split_tfs,
+        strand,
+    )
 
 
-def _parse_scan_results_all(moods_scan_res,
-                            motifs_length,
-                            motifs_name,
-                            bed_coord,
-                            tfs,
-                            clean=False,
-                            split_tf=True,
-                            strand_spec=True):
-    all_hits = [] # final return, lists of hits in this region.
+def _parse_scan_results_all(
+    moods_scan_res,
+    motifs_length,
+    motifs_name,
+    bed_coord,
+    tfs,
+    clean=False,
+    split_tf=True,
+    strand_spec=True,
+):
+    all_hits = []  # final return, lists of hits in this region.
 
     # First group by motif.name
     tf2results = {}
 
-    for (motif_idx, hits) in enumerate(moods_scan_res):
+    for motif_idx, hits in enumerate(moods_scan_res):
 
         motif_name = motifs_name[motif_idx % len(motifs_name)]
         motif_name = motif_name.split(",") if split_tf else [motif_name]
         motif_length = motifs_length[motif_idx % len(motifs_name)]
         strand = -1 if motif_idx >= len(motifs_name) else 1
         if not strand_spec:
-            strand = '*'
+            strand = "*"
         for name in motif_name:
             if name not in tfs:
                 continue
@@ -134,10 +161,17 @@ def _parse_scan_results_all(moods_scan_res,
                 score = round(h[1], 4)
                 # If direct output, then organize the record directly without merge overlapping hits
                 if not clean:
-                    record = [bed_coord['chr'], bed_coord['start'],
-                              bed_coord['end'], bed_coord['index'],
-                              name, score,
-                              strand, motif_start, motif_end]
+                    record = [
+                        bed_coord["chr"],
+                        bed_coord["start"],
+                        bed_coord["end"],
+                        bed_coord["index"],
+                        name,
+                        score,
+                        strand,
+                        motif_start,
+                        motif_end,
+                    ]
                     all_hits.append(record)
                 else:
 
@@ -151,35 +185,40 @@ def _parse_scan_results_all(moods_scan_res,
 
     for name in tf2results:
         for strand in tf2results[name]:
-            v  = tf2results[name][strand]
+            v = tf2results[name][strand]
             if len(v) == 0:
                 continue
-            v = [np.arange(s,e) for s,e in v]
+            v = [np.arange(s, e) for s, e in v]
             v = np.unique(np.concatenate(v).reshape((-1)))
             v = np.sort(v)
             v = consecutive(v)
             for h in v:
                 motif_start = np.min(h)
                 motif_end = np.max(h)
-                record = [bed_coord['chr'], bed_coord['start'],
-                          bed_coord['end'], bed_coord['index'],
-                          name, 0,
-                          strand, motif_start, motif_end]
+                record = [
+                    bed_coord["chr"],
+                    bed_coord["start"],
+                    bed_coord["end"],
+                    bed_coord["index"],
+                    name,
+                    0,
+                    strand,
+                    motif_start,
+                    motif_end,
+                ]
 
                 all_hits.append(record)
     return all_hits
 
 
-
-
 def _parse_scan_results_clean(moods_scan_res, motifs, bed_coord, tfs):
-    """ Parse results of MOODS.scan.scan_dna and return/write
-        The default input contains one pair of a single motif: forward and reverse strand
-        out_format: if "bed" each hit will be the motif position in bed format, with the start and end as peak coordinates
-                    if "motif" same as "bed" except the start and end columns are the motif location
-                    if "position" each hit will be a list of positions within a peak region (relative to the start position)
-                    if "count" each hit will be an integer of the number of occurrences. NO OUTPUT if count == 0
-                    if "binary" each hit will be 1 (any occurrence).  NO OUTPUT if count == 0
+    """Parse results of MOODS.scan.scan_dna and return/write
+    The default input contains one pair of a single motif: forward and reverse strand
+    out_format: if "bed" each hit will be the motif position in bed format, with the start and end as peak coordinates
+                if "motif" same as "bed" except the start and end columns are the motif location
+                if "position" each hit will be a list of positions within a peak region (relative to the start position)
+                if "count" each hit will be an integer of the number of occurrences. NO OUTPUT if count == 0
+                if "binary" each hit will be 1 (any occurrence).  NO OUTPUT if count == 0
     """
 
     all_hits = []
@@ -188,8 +227,7 @@ def _parse_scan_results_clean(moods_scan_res, motifs, bed_coord, tfs):
     scan_dict = {}
     # print (len(moods_scan_res), len(motifs))
 
-
-    for (motif_idx, hits) in enumerate(moods_scan_res):
+    for motif_idx, hits in enumerate(moods_scan_res):
 
         motif = motifs[motif_idx % len(motifs)]
         # strand = -1 if motif_idx >= len(motifs) else 1
@@ -207,7 +245,7 @@ def _parse_scan_results_clean(moods_scan_res, motifs, bed_coord, tfs):
             scan_dict[name] += v
 
     for name in scan_dict:
-        v  = scan_dict[name]
+        v = scan_dict[name]
         if len(v) == 0:
             continue
         v = np.unique(np.concatenate(v).reshape((-1)))
@@ -216,27 +254,34 @@ def _parse_scan_results_clean(moods_scan_res, motifs, bed_coord, tfs):
         for h in v:
             motif_start = np.min(h)
             motif_end = np.max(h)
-            record = [bed_coord['chr'], bed_coord['start'], bed_coord['end'], name, 0,
-                      1, motif_start, motif_end]
+            record = [
+                bed_coord["chr"],
+                bed_coord["start"],
+                bed_coord["end"],
+                name,
+                0,
+                1,
+                motif_start,
+                motif_end,
+            ]
 
             all_hits.append(record)
-
 
     return all_hits
 
 
 def _parse_scan_results(moods_scan_res, motifs, bed_coord, tfs):
-    """ Parse results of MOODS.scan.scan_dna and return/write
-        The default input contains one pair of a single motif: forward and reverse strand
-        out_format: if "bed" each hit will be the motif position in bed format, with the start and end as peak coordinates
-                    if "motif" same as "bed" except the start and end columns are the motif location
-                    if "position" each hit will be a list of positions within a peak region (relative to the start position)
-                    if "count" each hit will be an integer of the number of occurrences. NO OUTPUT if count == 0
-                    if "binary" each hit will be 1 (any occurrence).  NO OUTPUT if count == 0
+    """Parse results of MOODS.scan.scan_dna and return/write
+    The default input contains one pair of a single motif: forward and reverse strand
+    out_format: if "bed" each hit will be the motif position in bed format, with the start and end as peak coordinates
+                if "motif" same as "bed" except the start and end columns are the motif location
+                if "position" each hit will be a list of positions within a peak region (relative to the start position)
+                if "count" each hit will be an integer of the number of occurrences. NO OUTPUT if count == 0
+                if "binary" each hit will be 1 (any occurrence).  NO OUTPUT if count == 0
     """
 
     all_hits = []
-    for (motif_idx, hits) in enumerate(moods_scan_res):
+    for motif_idx, hits in enumerate(moods_scan_res):
 
         motif = motifs[motif_idx % len(motifs)]
         strand = -1 if motif_idx >= len(motifs) else 1
@@ -249,13 +294,22 @@ def _parse_scan_results(moods_scan_res, motifs, bed_coord, tfs):
                 for name in motif.name.split(","):
                     if name not in tfs:
                         continue
-                    record = [bed_coord['chr'], bed_coord['start'], bed_coord['end'], bed_coord['index'],
-                              name, score,
-                              strand, motif_start, motif_end]
+                    record = [
+                        bed_coord["chr"],
+                        bed_coord["start"],
+                        bed_coord["end"],
+                        bed_coord["index"],
+                        name,
+                        score,
+                        strand,
+                        motif_start,
+                        motif_end,
+                    ]
 
                     all_hits.append(record)
     all_hits = np.unique(np.array(all_hits), axis=0)
     return all_hits
+
 
 class Motifs:
     """
@@ -278,16 +332,18 @@ class Motifs:
     nCores : int, optional
         Number of cores to use, by default 32
     """
-    def __init__(self,
-                 ref_path_motif: str | Path,
-                 ref_path_fa: str | Path,
-                 bg: Literal['even', 'genome'] | tuple = 'even',
-                 pseudocount: float = 0.8,
-                 pvalue: float = 5e-5,
-                 nCores: int = 32,
-                 split_tf: bool = True,
-                 mode: Literal['motifmatchr', 'moods'] = 'motifmatchr'
-                 ):
+
+    def __init__(
+        self,
+        ref_path_motif: str | Path,
+        ref_path_fa: str | Path,
+        bg: Literal["even", "genome"] | tuple = "even",
+        pseudocount: float = 0.8,
+        pvalue: float = 5e-5,
+        nCores: int = 32,
+        split_tf: bool = True,
+        mode: Literal["motifmatchr", "moods"] = "motifmatchr",
+    ):
         self.n_jobs = nCores
         self.mode = mode
         # self.pool = ProcessPoolExecutor(max_workers=nCores)
@@ -295,13 +351,15 @@ class Motifs:
         #     self.all_motifs = list(motifs.parse(infile, "jaspar"))
         self.all_motifs = parse_jaspar(ref_path_motif)
         # self.all_motifs = np.array(self.all_motifs,dtype=object)
-        self.names = [set(motif.name.split(",")) if split_tf else {motif.name} for motif in self.all_motifs]
+        self.names = [
+            set(motif.name.split(",")) if split_tf else {motif.name} for motif in self.all_motifs
+        ]
         self.tfs = set().union(*self.names)
         # for large sequence header, only keep the text before the first space
         self.genome_seq = Fasta(ref_path_fa)
-        if bg == 'even':
+        if bg == "even":
             self.bg = [0.25, 0.25, 0.25, 0.25]
-        elif bg == 'genome':
+        elif bg == "genome":
             b = ""
             for chrom in self.genome_seq.keys():
                 b += str(self.genome_seq[chrom])
@@ -309,21 +367,23 @@ class Motifs:
             self.bg = MOODS.tools.bg_from_sequence_dna(str(b), 1)
         else:
             self.bg = bg
-        self.pre_matrices_p, \
-            self.pre_thresholds_p, \
-            self.pre_matrices_m, \
-            self.pre_thresholds_m = self._prepare_moods_settings(self.all_motifs, self.bg, pseudocount, pvalue)
+        (
+            self.pre_matrices_p,
+            self.pre_thresholds_p,
+            self.pre_matrices_m,
+            self.pre_thresholds_m,
+        ) = self._prepare_moods_settings(self.all_motifs, self.bg, pseudocount, pvalue)
         self.pseudocount = pseudocount
 
         self.pvalue = pvalue
 
-
-    def prep_scanner(self,
-                     tf_genes: list[str] | None = None,
-                     pseudocount: float = 0.8,
-                     pvalue: float = 5e-5,
-                     window: int = 7
-                     ):
+    def prep_scanner(
+        self,
+        tf_genes: list[str] | None = None,
+        pseudocount: float = 0.8,
+        pvalue: float = 5e-5,
+        window: int = 7,
+    ):
         """
         Prepare the MOODS scanner for motif matching
 
@@ -347,20 +407,28 @@ class Motifs:
         if tf_genes is None:
             tf_genes = self.tfs
         tf_genes_set = set(tf_genes)
-        select = slice(None) if tf_genes is None else [len(name & tf_genes_set) > 0 for name in self.names]
+        select = (
+            slice(None)
+            if tf_genes is None
+            else [len(name & tf_genes_set) > 0 for name in self.names]
+        )
         self.select = select
 
         if pseudocount != self.pseudocount or pvalue != self.pvalue:
             # motif = self.all_motifs[select]
             motif = [motif for motif, keep in zip(self.all_motifs, select) if keep]
             # Each TF gets a matrix for the + and for the - strand, and a corresponding threshold
-            matrices_p, threshold_p, matrices_m, threshold_m = self._prepare_moods_settings(motif, self.bg, pseudocount, pvalue)
+            matrices_p, threshold_p, matrices_m, threshold_m = self._prepare_moods_settings(
+                motif, self.bg, pseudocount, pvalue
+            )
         else:
 
-            matrices_p, threshold_p, matrices_m, threshold_m = self.pre_matrices_p[select], \
-                                                                self.pre_thresholds_p[select], \
-                                                                self.pre_matrices_m[select], \
-                                                                self.pre_thresholds_m[select]
+            matrices_p, threshold_p, matrices_m, threshold_m = (
+                self.pre_matrices_p[select],
+                self.pre_thresholds_p[select],
+                self.pre_matrices_m[select],
+                self.pre_thresholds_m[select],
+            )
 
         matrices = np.concatenate([matrices_p, matrices_m])
         thresholds = np.concatenate([threshold_p, threshold_m])
@@ -373,12 +441,16 @@ class Motifs:
         # print ("finish preparing scanner")
         return scanner_
 
-    def scan_once(self, chr, start, end,
-                  clean: bool = False,
-                  concat: bool = True,
-                  split_tfs: bool = True,
-                  strand: bool = True,
-                  ):
+    def scan_once(
+        self,
+        chr,
+        start,
+        end,
+        clean: bool = False,
+        concat: bool = True,
+        split_tfs: bool = True,
+        strand: bool = True,
+    ):
         global scanner
         scanner = self.scanner
         # motif = self.all_motifs[self.select]
@@ -391,30 +463,35 @@ class Motifs:
         scan_res = scanner.scan(str(seq))
         results = [[[xxx.pos, xxx.score] for xxx in xx] for xx in scan_res]
 
-        return _parse_scan_results_all(results,
-                                   motifs_length, motifs_name,
-                                   {'chr': chr, 'start': start, 'end': end, 'index':0},
-                                   self.tfs, clean, split_tfs, strand)
+        return _parse_scan_results_all(
+            results,
+            motifs_length,
+            motifs_name,
+            {"chr": chr, "start": start, "end": end, "index": 0},
+            self.tfs,
+            clean,
+            split_tfs,
+            strand,
+        )
 
-
-    def chromvar_scan(self, adata,
-                      verbose: bool = True):
+    def chromvar_scan(self, adata, verbose: bool = True):
         peaks = regionparser(list(adata.var_names))
         res = self.scan_motif(peaks, verbose=verbose, count=True)
         res = np.array(res)
-        res = pd.DataFrame(res, index=adata.var_names,
-                           columns=[m.name for m in self.all_motifs])
-        adata.varm['motif_match'] = res.to_numpy()
-        adata.uns['motif_name'] = res.columns
+        res = pd.DataFrame(res, index=adata.var_names, columns=[m.name for m in self.all_motifs])
+        adata.varm["motif_match"] = res.to_numpy()
+        adata.uns["motif_name"] = res.columns
 
-    def scan_motif(self, peaks_iter,
-                    clean: bool = False,
-                    concat: bool = True,
-                   verbose: bool = False,
-                   split_tfs: bool = True,
-                    strand: bool = True,
-                   count: bool = False,
-                    ):
+    def scan_motif(
+        self,
+        peaks_iter,
+        clean: bool = False,
+        concat: bool = True,
+        verbose: bool = False,
+        split_tfs: bool = True,
+        strand: bool = True,
+        count: bool = False,
+    ):
         """
         Scan motifs in the peaks iterator
 
@@ -447,9 +524,9 @@ class Motifs:
         motifs_name = [m.name for m in motif]
         name2id = {name: i for i, name in enumerate(motifs_name)}
 
-
         peaks_iter = np.array(peaks_iter)
-        if verbose: bar = trange(len(peaks_iter) * 2)
+        if verbose:
+            bar = trange(len(peaks_iter) * 2)
         # results_all = []
         pool = ProcessPoolExecutor(max_workers=self.n_jobs)
         p_list = []
@@ -469,13 +546,22 @@ class Motifs:
             #                                 motifs_length, motifs_name,
             #                                 {'chr': chr, 'start': start, 'end': end, 'index': peak_idx},
             #                                 self.tfs, clean, split_tfs, strand))
-            p_list.append(pool.submit(global_scan,
-                                           seq,
-                                           motifs_length,
-                                           motifs_name,
-                                           chr, start, end,
-                                           peak_idx,
-                                           self.tfs, clean, split_tfs, strand))
+            p_list.append(
+                pool.submit(
+                    global_scan,
+                    seq,
+                    motifs_length,
+                    motifs_name,
+                    chr,
+                    start,
+                    end,
+                    peak_idx,
+                    self.tfs,
+                    clean,
+                    split_tfs,
+                    strand,
+                )
+            )
 
             if len(p_list) >= (self.n_jobs * 10):
                 for p in as_completed(p_list):
@@ -488,7 +574,7 @@ class Motifs:
                         if not count:
                             maps[idx] = all_hits
                         else:
-                            freq = np.zeros((1,len(motifs_length)))
+                            freq = np.zeros((1, len(motifs_length)))
                             for hit in all_hits:
                                 freq[0, name2id[hit[4]]] = 1
                             maps[idx] = freq
@@ -509,14 +595,14 @@ class Motifs:
                 if not count:
                     maps[idx] = all_hits
                 else:
-                    freq = np.zeros((1,len(motifs_length)))
+                    freq = np.zeros((1, len(motifs_length)))
                     for hit in all_hits:
                         freq[0, name2id[hit[4]]] = 1
                     maps[idx] = freq
         if count:
             for i in range(len(maps)):
                 if len(maps[i]) == 0:
-                    maps[i] = np.zeros((1,len(motifs_length)))
+                    maps[i] = np.zeros((1, len(motifs_length)))
 
         pool.shutdown(wait=True)
         # maps = list(self.pool.map(_parse_scan_results, results_all)) if not clean else list(self.pool.map(_parse_scan_results_clean, results_all))
@@ -526,25 +612,46 @@ class Motifs:
             return list(itertools.chain.from_iterable(maps))
         return maps
 
-    def _prepare_moods_settings(self,
-                                jaspar_motifs,
-                                bg,
-                                pseduocount,
-                                pvalue=1e-5):
+    def _prepare_moods_settings(self, jaspar_motifs, bg, pseduocount, pvalue=1e-5):
         """Find hits of list of jaspar_motifs in pyfasta object fasta, using the background distribution bg and
         pseudocount, significant to the give pvalue
         """
         start = time.time()
         pool = ProcessPoolExecutor(max_workers=self.n_jobs)
-        matrices_p = list(pool.map(partial(_jaspar_to_moods_matrix, bg=bg, pseudocount=pseduocount, mode=self.mode),
-                                        jaspar_motifs, chunksize=100))
+        matrices_p = list(
+            pool.map(
+                partial(
+                    _jaspar_to_moods_matrix,
+                    bg=bg,
+                    pseudocount=pseduocount,
+                    mode=self.mode,
+                ),
+                jaspar_motifs,
+                chunksize=100,
+            )
+        )
         matrices_m = list(pool.map(MOODS.tools.reverse_complement, matrices_p, chunksize=100))
         # print('get_mtx', time.time() - start)
         start = time.time()
 
-
-        thresholds_p = list(pool.map(partial(thresholds_from_p, bg=bg, pvalue=pvalue), matrices_p, chunksize=100))
-        thresholds_m = thresholds_p if self.mode == 'motifmatchr' else list(pool.map(partial(thresholds_from_p, bg=bg, pvalue=pvalue), matrices_m, chunksize=100))
+        thresholds_p = list(
+            pool.map(
+                partial(thresholds_from_p, bg=bg, pvalue=pvalue),
+                matrices_p,
+                chunksize=100,
+            )
+        )
+        thresholds_m = (
+            thresholds_p
+            if self.mode == "motifmatchr"
+            else list(
+                pool.map(
+                    partial(thresholds_from_p, bg=bg, pvalue=pvalue),
+                    matrices_m,
+                    chunksize=100,
+                )
+            )
+        )
         # thresholds_p = [MOODS.tools.threshold_from_p(m, bg, pvalue) for m in matrices_p]
         # thresholds_m = [MOODS.tools.threshold_from_p(m, bg, pvalue) for m in matrices_m]
         # print('get_thresholds', time.time() - start)
@@ -552,8 +659,13 @@ class Motifs:
         # print (thresholds_p, thresholds_m)
         pool.shutdown(wait=True)
         # self.pool = ProcessPoolExecutor(max_workers=self.n_jobs)
-        return np.array(matrices_p,dtype=object), np.array(thresholds_p,dtype=object), \
-            np.array(matrices_m,dtype=object), np.array(thresholds_m,dtype=object)
+        return (
+            np.array(matrices_p, dtype=object),
+            np.array(thresholds_p, dtype=object),
+            np.array(matrices_m, dtype=object),
+            np.array(thresholds_m, dtype=object),
+        )
+
 
 def JASPAR2022_core_Motifs(genome: genome.Genome, bg, **kwargs):
     """
@@ -568,7 +680,7 @@ def JASPAR2022_core_Motifs(genome: genome.Genome, bg, **kwargs):
     -------
 
     """
-    if bg == 'genome':
+    if bg == "genome":
         bg = genome.bg
     return Motifs(JASPAR2022_core(), genome.fetch_fa(), bg, **kwargs)
 
@@ -586,9 +698,10 @@ def CisBPHuman_Motifs(genome: genome.Genome, bg, **kwargs):
     -------
 
     """
-    if bg == 'genome':
+    if bg == "genome":
         bg = genome.bg
     return Motifs(CisBP_Human(), genome.fetch_fa(), bg, **kwargs)
+
 
 def CisBP_JASPAR_Motifs(genome: genome.Genome, bg, **kwargs):
     """
@@ -604,7 +717,6 @@ def CisBP_JASPAR_Motifs(genome: genome.Genome, bg, **kwargs):
     -------
 
     """
-    if bg == 'genome':
+    if bg == "genome":
         bg = genome.bg
     return Motifs(CisBPJASPA(), genome.fetch_fa(), bg, **kwargs)
-

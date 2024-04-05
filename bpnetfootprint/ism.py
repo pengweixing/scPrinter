@@ -1,6 +1,7 @@
-import torch
 import numpy as np
+import torch
 from tqdm.auto import tqdm, trange
+
 
 @torch.no_grad()
 def ism(model, X_0, args=None, batch_size=128, verbose=False):
@@ -39,7 +40,7 @@ def ism(model, X_0, args=None, batch_size=128, verbose=False):
     """
     # print (X_0.shape)
     n_seqs, n_choices, seq_len = X_0.shape
-    print (X_0.shape)
+    print(X_0.shape)
     X_idxs = X_0.argmax(axis=1)
 
     n = seq_len * (n_choices - 1)
@@ -65,12 +66,12 @@ def ism(model, X_0, args=None, batch_size=128, verbose=False):
     for i in range(n_seqs):
         ism = []
         for start in tqdm(starts, disable=not verbose):
-            X_ = X[i, start:start + batch_size].cuda()
+            X_ = X[i, start : start + batch_size].cuda()
 
             if args is None:
                 y = model(X_)
             else:
-                args_ = tuple(a[i:i + 1] for a in args)
+                args_ = tuple(a[i : i + 1] for a in args)
                 y = model(X_, *args_)
 
             ism.append(y - reference[i])
@@ -84,11 +85,11 @@ def ism(model, X_0, args=None, batch_size=128, verbose=False):
     isms = isms.reshape(n_seqs, seq_len, n_choices - 1)
 
     j_idxs = torch.arange(n_seqs * seq_len)
-    X_ism = torch.zeros(n_seqs * seq_len, n_choices, device='cuda')
+    X_ism = torch.zeros(n_seqs * seq_len, n_choices, device="cuda")
     for i in range(1, n_choices):
         i_idxs = (X_idxs.flatten() + i) % n_choices
         X_ism[j_idxs, i_idxs] = isms[:, :, i - 1].flatten()
 
     X_ism = X_ism.reshape(n_seqs, seq_len, n_choices).permute(0, 2, 1)
-    X_ism = (X_ism - X_ism.mean(dim=1, keepdims=True))
+    X_ism = X_ism - X_ism.mean(dim=1, keepdims=True)
     return X_ism

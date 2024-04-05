@@ -203,9 +203,10 @@ def import_fragments(
             sys.stdout.flush()
 
         data = snap.AnnDataSet(adatas=adatas, filename=savename + "_temp")
-
-        data2 = snap.AnnData(filename=savename, obs=data.obs[:])
+        snap.metrics.tsse(data, genome.fetch_gff())
+        data2 = snap.AnnData(filename=savename)
         data2.obs_names = data.obs_names
+        data2.obs = (data.obs[:],)
         print("start transferring insertions")
         start = time.time()
         insertion = data.adatas.obsm["insertion"]

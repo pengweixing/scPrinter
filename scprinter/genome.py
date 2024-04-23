@@ -4,6 +4,9 @@ from __future__ import annotations
 import os.path
 from pathlib import Path
 
+import h5py
+import numpy as np
+import pyBigWig
 import torch
 from pooch import Decompress, Untar
 from pyfaidx import Fasta
@@ -177,6 +180,30 @@ class Genome:
                 if ".h5" in f:
                     return str(f)
         return self.bias_file
+
+    def fetch_bias_bw(self):
+        bias_file = self.fetch_bias()
+        bias_bw = bias_file.replace(".h5", ".bw")
+        if not os.path.exists(bias_bw):
+            print("creating bias bigwig (runs for new bias h5 file)")
+            with h5py.File(bias_file, "r") as dct:
+                precomputed_bias = {chrom: np.array(dct[chrom]) for chrom in dct.keys()}
+                bw = pyBigWig.open(bias_bw, "w")
+                header = []
+                for chrom in precomputed_bias:
+                    sig = precomputed_bias[chrom]
+                    length = sig.shape[-1]
+                    header.append((chrom, length))
+                bw.addHeader(header, maxZooms=0)
+                for chrom in precomputed_bias:
+                    sig = precomputed_bias[chrom]
+                    bw.addEntries(
+                        str(chrom),
+                        np.arange(len(sig)),
+                        values=sig.astype("float"),
+                        span=1,
+                    )
+                bw.close()
 
 
 GRCh38 = Genome(

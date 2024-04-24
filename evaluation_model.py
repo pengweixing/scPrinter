@@ -35,6 +35,7 @@ parser.add_argument("--overwrite", action="store_true", default=False, help="ove
 parser.add_argument("--replicate", type=int, default=None, help="replicate")
 parser.add_argument("--decay", type=float, default=None, help="decay")
 parser.add_argument("--disable_ema", action="store_true", default=False, help="disable emas")
+parser.add_argument("--extra", type=str, default="", help="extra")
 
 
 torch.set_num_threads(4)
@@ -143,7 +144,7 @@ dataloader = {
     k: ChromBPDataLoader(
         dataset=datasets[k],
         batch_size=64,
-        num_workers=0,
+        num_workers=10,
         pin_memory=True,
         shuffle=True if k in ["train"] else False,
     )
@@ -172,7 +173,7 @@ if not os.path.exists(save_dir):
 for wrapper in wrappers:
     for n_out in nth_output:
         for method in methods:
-            extra = f"_{n_out}_"
+            extra = args.extra + f"_{n_out}_"
             if len(gpus) > 1:
                 if (
                     write_bigwig

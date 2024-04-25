@@ -148,7 +148,11 @@ class PyTorchDeep(Explainer):
 
         scaler = GradScaler(enabled=self.amp)
 
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=self.amp):
+        try:
+            autocast_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=self.amp)
+        except RuntimeError:
+            autocast_context = torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.amp)
+        with autocast_context:
             outputs = self.model(*X)
 
         selected = [val for val in outputs[:, idx]]

@@ -413,7 +413,11 @@ class scFootprintBPNet(nn.Module):
             training_index_all = np.random.permutation(len(training_data))
             training_data_epoch_loader = training_data.resample()
             for data in training_data_epoch_loader:
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                try:
+                    autocast_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=self.amp)
+                except RuntimeError:
+                    autocast_context = torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.amp)
+                with autocast_context:
                     random_modes = np.random.permutation(modes)[:30]
                     select_index = torch.as_tensor([index_all.index(mode) for mode in random_modes])
                     if len(data) == 2:

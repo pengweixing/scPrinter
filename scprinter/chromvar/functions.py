@@ -44,7 +44,10 @@ def get_bias(adata, genome):
         overall_freq[1] += c
         overall_freq[2] += g
         overall_freq[3] += t
-        gc_contents.append((g + c) / (a + c + g + t))
+        if a + c + g + t == 0:
+            gc_contents.append(0.5)
+        else:
+            gc_contents.append((g + c) / (a + c + g + t))
     gc_contents = np.asarray(gc_contents)
     gc_contents[np.isnan(gc_contents)] = 0.5
     overall_freq = np.array(overall_freq)
@@ -57,7 +60,7 @@ def get_bias(adata, genome):
     return None
 
 
-def sample_bg_peaks(adata, method="nndescent", niterations=50, w=0.1, bs=50, n_jobs=-1):
+def sample_bg_peaks(adata, method="nndescent", bg_set=None, niterations=50, w=0.1, bs=50, n_jobs=1):
     assert method in ["nndescent", "chromvar"], "Method not supported"
     reads_per_peak = adata.X.sum(axis=0)
     assert np.min(reads_per_peak) > 0, "Some peaks have no reads"
@@ -67,12 +70,20 @@ def sample_bg_peaks(adata, method="nndescent", niterations=50, w=0.1, bs=50, n_j
     chol_cov_mat = np.linalg.cholesky(np.cov(mat))
     trans_norm_mat = scipy.linalg.solve_triangular(a=chol_cov_mat, b=mat, lower=True).transpose()
     print("Sampling nearest neighbors")
+    if bg_set is not None:
+        assert (
+            method == "nndescent"
+        ), "Only nndescent method is supported for custom background peaks"
     if method == "nndescent":
         index = NNDescent(
-            trans_norm_mat, metric="euclidean", n_neighbors=niterations, n_jobs=n_jobs
+            trans_norm_mat[bg_set if bg_set is not None else slice(None)],
+            metric="euclidean",
+            n_neighbors=niterations,
+            n_jobs=n_jobs,
         )
         knn_idx, _ = index.query(trans_norm_mat, niterations)
-
+        if bg_set is not None:
+            knn_idx = bg_set[knn_idx.reshape((-1))].reshape((-1, niterations))
         adata.varm["bg_peaks"] = knn_idx
     elif method == "chromvar":
         knn_idx = create_bins_and_sample_background(
@@ -97,7 +108,8 @@ def create_bins_and_sample_background(trans_norm_mat, bs, w, niterations):
     # Calculate probabilities
     bin_p = scipy.stats.norm.pdf(bin_dist, 0, w)
     # Find nearest bin membership for each point in trans_norm_mat
-    index = NNDescent(bin_data, metric="euclidean", n_neighbors=1)
+    print("NNDescent", bin_data.shape)
+    index = NNDescent(bin_data, metric="euclidean", n_neighbors=1, n_jobs=-1)
     indices, _ = index.query(trans_norm_mat, 1)
     bin_membership = indices.flatten()
     # Calculate bin density
@@ -164,55 +176,56 @@ def compute_deviations_gpu(adata, chunk_size: int = 10000, device="cuda"):
     else:
         import numpy as backend
 
-    logging.info("Computing expectation reads per cell and peak...")
+    print("Computing expectation reads per cell and peak...")
     expectation_var = backend.asarray(adata.X.sum(0), dtype=backend.float32).reshape(
         (1, adata.X.shape[1])
     )
     expectation_var /= expectation_var.sum()
-    expectation_obs = backend.asarray(adata.X.sum(1), dtype=backend.float32).reshape(
-        (adata.X.shape[0], 1)
-    )
-    motif_match = backend.array(adata.varm["motif_match"])
-    obs_dev = backend.zeros((adata.n_obs, motif_match.shape[1]), dtype=backend.float32)
+    expectation_obs = np.asarray(adata.X.sum(1), dtype=np.float32).reshape((adata.X.shape[0], 1))
+    motif_match = backend.asarray(adata.varm["motif_match"], dtype=backend.float32)
 
+    obs_dev = np.zeros((adata.n_obs, motif_match.shape[1]), dtype=np.float32)
     n_bg_peaks = adata.varm["bg_peaks"].shape[1]
-    bg_dev = backend.zeros((n_bg_peaks, adata.n_obs, motif_match.shape[1]), dtype=backend.float32)
+    bg_dev = np.zeros((n_bg_peaks, adata.n_obs, motif_match.shape[1]), dtype=np.float32)
 
     for start in tqdm(range(0, adata.n_obs, chunk_size), desc="Processing chunks"):
         end = min(start + chunk_size, adata.n_obs)
-        X_chunk = adata.X[start:end]
-
+        temp_adata = adata[start:end].copy()
+        X_chunk = temp_adata.X
+        expectation_obs_chunk = backend.asarray(expectation_obs[start:end])
         if sparse.isspmatrix(X_chunk) and device == "cuda":
             X_chunk = scipy_to_cupy_sparse(X_chunk)
         else:
             X_chunk = backend.array(X_chunk)
-
-        obs_dev[start:end, :] = _compute_deviations_gpu(
+        res = _compute_deviations_gpu(
             motif_match,
             X_chunk,
-            expectation_obs[start:end],
+            expectation_obs_chunk,
             expectation_var,
             device=device,
         )
+        obs_dev[start:end, :] = res.get() if device == "cuda" else res
 
-        for i in trange(n_bg_peaks):
+        for i in trange(n_bg_peaks, desc="Processing background peaks"):
             bg_peak_idx = backend.array(adata.varm["bg_peaks"][:, i]).flatten()
             bg_motif_match = motif_match[bg_peak_idx, :]
-            bg_dev[i, start:end, :] = _compute_deviations_gpu(
+            res = _compute_deviations_gpu(
                 bg_motif_match,
                 X_chunk,
-                expectation_obs[start:end],
+                expectation_obs_chunk,
                 expectation_var,
                 device=device,
             )
+            bg_dev[i, start:end, :] = res.get() if device == "cuda" else res
+        del temp_adata, X_chunk
 
-    mean_bg_dev = backend.mean(bg_dev, axis=0)
-    std_bg_dev = backend.std(bg_dev, axis=0)
+    mean_bg_dev = np.mean(bg_dev, axis=0)
+    std_bg_dev = np.std(bg_dev, axis=0)
     dev = (obs_dev - mean_bg_dev) / std_bg_dev
-    dev = backend.nan_to_num(dev, nan=0.0)
+    dev = np.nan_to_num(dev, nan=0.0)
 
     dev = AnnData(
-        dev.get() if device == "cuda" else dev, dtype="float32", obs=adata.obs.copy()
+        dev, dtype="float32", obs=adata.obs.copy()
     )  # Convert back to CPU for AnnData compatibility
     # dev.obs_names = adata.obs_names
     dev.var_names = adata.uns["motif_name"]
@@ -252,22 +265,24 @@ def bagDeviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None, u
     TFnames_to_rank = {tf: i for i, tf in enumerate(TFnames)}
     # Import correlation based on PWMs for the organism
     cormat = pd.read_csv(motif_corr_matrix, sep="\t")  # Assuming the RDS file contains one object
+
     if use_name:
         tf1 = [xx.split("_")[2] for xx in cormat["TF1"]]
         tf2 = [xx.split("_")[2] for xx in cormat["TF2"]]
         cormat["TF1"] = tf1
         cormat["TF2"] = tf2
+
     assert set(TFnames).issubset(
         set(cormat["TF1"]).union(set(cormat["TF2"]))
     ), "All TF names must be in the correlation matrix"
-
+    cormat = cormat[(cormat["TF1"].isin(TFnames)) & (cormat["TF2"].isin(TFnames))]
     i = 1
     TFgroups = []
     while len(TFnames) != 0:
         tfcur = TFnames[0]
         boo = ((cormat["TF1"] == tfcur) | (cormat["TF2"] == tfcur)) & (cormat["Pearson"] >= cor)
         hits = cormat[boo]
-        tfhits = list(np.unique(hits[["TF1", "TF2"]])) + [tfcur]
+        tfhits = list(set(list(np.unique(hits[["TF1", "TF2"]])) + [tfcur]))
 
         # Update lists
         TFnames = [tf for tf in TFnames if tf not in tfhits]

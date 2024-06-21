@@ -186,7 +186,9 @@ def compute_deviations_gpu(adata, chunk_size: int = 10000, device="cuda"):
 
     obs_dev = np.zeros((adata.n_obs, motif_match.shape[1]), dtype=np.float32)
     n_bg_peaks = adata.varm["bg_peaks"].shape[1]
-    bg_dev = np.zeros((n_bg_peaks, adata.n_obs, motif_match.shape[1]), dtype=np.float32)
+    # bg_dev = np.zeros((n_bg_peaks, adata.n_obs, motif_match.shape[1]), dtype=np.float32)
+    mean_bg_dev = np.zeros_like(obs_dev)
+    std_bg_dev = np.zeros_like(obs_dev)
 
     for start in tqdm(range(0, adata.n_obs, chunk_size), desc="Processing chunks"):
         end = min(start + chunk_size, adata.n_obs)
@@ -205,7 +207,7 @@ def compute_deviations_gpu(adata, chunk_size: int = 10000, device="cuda"):
             device=device,
         )
         obs_dev[start:end, :] = res.get() if device == "cuda" else res
-
+        bg_dev_chunk = np.zeros((n_bg_peaks, end - start, motif_match.shape[1]), dtype=np.float32)
         for i in trange(n_bg_peaks, desc="Processing background peaks"):
             bg_peak_idx = backend.array(adata.varm["bg_peaks"][:, i]).flatten()
             bg_motif_match = motif_match[bg_peak_idx, :]
@@ -216,11 +218,13 @@ def compute_deviations_gpu(adata, chunk_size: int = 10000, device="cuda"):
                 expectation_var,
                 device=device,
             )
-            bg_dev[i, start:end, :] = res.get() if device == "cuda" else res
+            bg_dev_chunk[i, :, :] = res.get() if device == "cuda" else res
+        mean_bg_dev[start:end, :] = np.mean(bg_dev_chunk, axis=0)
+        std_bg_dev[start:end, :] = np.std(bg_dev_chunk, axis=0)
         del temp_adata, X_chunk
 
-    mean_bg_dev = np.mean(bg_dev, axis=0)
-    std_bg_dev = np.std(bg_dev, axis=0)
+    # mean_bg_dev = np.mean(bg_dev, axis=0)
+    # std_bg_dev = np.std(bg_dev, axis=0)
     dev = (obs_dev - mean_bg_dev) / std_bg_dev
     dev = np.nan_to_num(dev, nan=0.0)
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gc
 import os
-import sys
 
 import numpy as np
 
@@ -10,26 +9,23 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_MAX_THREADS"] = "1"
 import itertools
 import math
-import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from pathlib import Path
+from functools import partial
 
 import anndata
 import pandas as pd
 import pyranges
-import snapatac2 as snap
-import torch
-from scipy.sparse import csc_matrix, csr_matrix, vstack
+from scipy.sparse import csc_matrix, vstack
 from sklearn.metrics import pairwise_distances
 from tqdm.auto import tqdm, trange
 
-from . import getBias, getFootprint, getTFBS, motifs
-from .fetch import _get_group_atac, _get_group_atac_bw
-from .io import PyPrinter
+from . import TFBS, footprint, motifs
+from .io import _get_group_atac, _get_group_atac_bw, get_bias_insertions, scPrinter
 from .utils import *
 
 
+# Set global variables so all child processes have access to the same printer dispertion model and insertion profiles
 def set_global_disp_model(printer):
     globals()[printer.unique_string + "_dispModels"] = printer.dispersionModel
 
@@ -38,60 +34,25 @@ def set_global_insertion_profile(printer):
     globals()[printer.unique_string + "insertion_profile"] = printer.fetch_insertion_profile()
 
 
-class BackedBindingScoreAnnData:
-    """
-    A wrapper class for snap.AnnData to allow for lazy loading of sites
-    """
-
-    def __init__(self, *args, **kwargs):
-        """
-
-        Parameters
-        ----------
-        args
-            args that will be passed to snap.AnnData
-        kwargs
-            kwargs that will be passed to snap.AnnData
-        """
-        self.adata = snap.AnnData(*args, **kwargs)
-
-    def __getattr__(self, attr):
-        return getattr(self.adata, attr)
-
-    def __repr__(self):
-        return self.adata.__repr__()
-
-    def fetch_site(self, identifier):
-        """
-        Fetch the site information from the underlying hdf5 file
-        Parameters
-        ----------
-        identifier: str
-            the identifier of the footprint region, e.g. "chr1:1294726-1295726"
-
-        Returns
-        -------
-        pd.DataFrame
-            a dataframe containing the site information
-
-        """
-        site_index = pd.read_hdf(str(self.uns["sites"]), "site_id").loc[identifier]
-
-        return pd.read_hdf(str(self.uns["sites"]), "chunk_%d" % site_index["chunk"]).iloc[
-            site_index["start"] : site_index["end"]
-        ]
-
-
 class BindingScoreAnnData:
     """
-    A wrapper class for anndata.AnnData to allow for lazy loading of sites
+    A wrapper class for anndata.AnnData or snap.AnnData to allow for lazy loading of sites
     """
 
-    def __init__(self, *args, **kwargs):
-        self.adata = anndata.AnnData(*args, **kwargs)
+    def __init__(self, backed=False, *args, **kwargs):
+        wrapper = snap.AnnData if backed else anndata.AnnData
+        self.adata = wrapper(*args, **kwargs)
 
     def __getattr__(self, attr):
+        # Delegate attribute access to self.adata, unless it's the 'adata' attribute
         return getattr(self.adata, attr)
+
+    def __setattr__(self, attr, value):
+        # Use the object's __dict__ to set 'adata' attribute directly to avoid recursion
+        if attr == "adata":
+            super().__setattr__(attr, value)
+        else:
+            setattr(self.adata, attr, value)
 
     def __repr__(self):
         return self.adata.__repr__()
@@ -114,11 +75,6 @@ class BindingScoreAnnData:
         return pd.read_hdf(str(self.uns["sites"]), "chunk_%d" % site_index["chunk"]).iloc[
             site_index["start"] : site_index["end"]
         ]
-
-
-"""
-underlying function for calculaing batch of binding scores
-"""
 
 
 def _get_binding_score_batch(
@@ -135,18 +91,36 @@ def _get_binding_score_batch(
     downsample=1,
     strand="*",
 ):
+    """
+    Underlying function for calculating batch of binding scores. Parallelization is not done here.
+
+    Parameters:
+    region_identifiers (list[str]): List of region identifiers.
+    cell_grouping (list[str] | list[list[str]] | np.ndarray): Cell groupings.
+    Tn5Bias (np.ndarray): Numeric vector of predicted Tn5 bias for the current region.
+    regions (pd.DataFrame): pyRanges object for the current region.
+    sites (pd.DataFrame | None): pyRanges object. Genomic ranges of motif matches in the current region.
+    tileSize (int): Size of tiles if sites is None. Default is 10.
+    contextRadius (int): Context radius. Default is 100.
+    unique_string (str | None): Unique string for accessing global variables.
+    downsample (float): Downsampling factor for ATAC-seq data. Default is 1 (no downsampling).
+    strand (str): Strand for motif scanning. Default is "*".
+
+    Returns:
+    list[dict]: List of dictionaries containing region identifier and corresponding binding scores.
+    """
 
     result = []
-    # Create a fake pyprinter object to pass on
+    # Create a fake scPrinter object to pass on
     # Why we need a fake one?
-    # Because these functions are created to be compatible with PyPrinter centered objects
+    # Because these functions are created to be compatible with scPrinter centered objects
     # But it would be slow to pass the real printer project, because python would pickle everything
+    # So we need a fake one to only keep the insertion_profile~
     insertion_profile = globals()[unique_string + "insertion_profile"]
     dispModels = globals()[unique_string + "_dispModels"]
     bindingscoremodel = globals()[unique_string + "_bindingscoremodel"]
-    printer = PyPrinter(insertion_profile=insertion_profile)
+    printer = scPrinter(insertion_profile=insertion_profile)
     for i, region_identifier in enumerate(region_identifiers):
-        # assumes the cell_grouping
         if sites is None:
             site = None
         else:
@@ -162,7 +136,7 @@ def _get_binding_score_batch(
             v[v < 0] = 0
 
         result.append(
-            getTFBS.getRegionBindingScore(
+            TFBS.getRegionBindingScore(
                 region_identifier,
                 atac,
                 Tn5Bias[i,],
@@ -181,13 +155,13 @@ def _get_binding_score_batch(
 
 
 def get_binding_score(
-    printer: PyPrinter,
+    printer: scPrinter,
     cell_grouping: list[str] | list[list[str]] | np.ndarray,
     group_names: list[str] | str,
     regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
     region_width: int | None = None,
     model_key: str = "TF",
-    nCores: int = 16,
+    n_jobs: int = 16,
     contextRadius: int = 100,
     save_key: str = None,
     backed: bool = True,
@@ -206,7 +180,7 @@ def get_binding_score(
 
     Parameters
     ----------
-    printer: PyPrinter
+    printer: scPrinter
         The printer object you generated by `scprinter.pp.import_fragments` or loaded by `scprinter.load_printer`
     cell_grouping: list[list[str]] | list[str] | np.ndarray
         The cell grouping you want to visualize, specifiec by a list of the cell barcodes belong to this group, e.g.
@@ -228,7 +202,7 @@ def get_binding_score(
         The regions you provided would be resized to this width with fixed center point of each region
     model_key: str
         The key of the model you want to use for the binding score calculation, which you specified when loading the model.
-    nCores: int
+    n_jobs: int
         Number of parallel process to use
     contextRadius: int
         The radius of the context region used for the binding score calculation, default 100
@@ -242,6 +216,23 @@ def get_binding_score(
         The motif scanner you want to use for the binding score calculation. When passing one, the binding score will be
         calculated only on sites that have a motif matching. When passing None,
         the binding score will be calculated on tiled regions with step size 10
+    manual_sites: list[pd.DataFrame] | None
+        The manually specified sites you want to use for the binding score calculation.
+        This is to be compatible with the R version, to reproduce the results when using motif scores as well.
+    tile: int
+        The tile size for the tiled region used for the binding score calculation. Default 10. For instance, a peak region
+        of 1000bp, will be divided into 10bp tiles, and the binding score will be calculated on each tile. (flanking regions
+        will be ignored)
+    open_anndata: bool
+        Whether to open the anndata object when finish calculating the binding score result. Default True. When False, it will
+        save memory by lazy loading, so good for Terra and gcloud.
+    downsample: float
+        The fraction of the ATAC signal to be downsampled. Default 1, meaning no downsampling.
+    strand: str
+        The strand of the regions, default "*". When providing a motif scanner, strand is ignored, it will always based on whether the motifs
+        matched on +/- strand. For tiled window calculation, "+" or "*" means only on + strand and "-" means only on - strand.
+    cache_factor: int
+        After how many cache_factor x n_jobs chunks calculated, we fetch the results and save them to disk is backed. Default 2.
 
     Returns
     -------
@@ -307,28 +298,26 @@ def get_binding_score(
         df_var["identifier"] = region_identifiers
         df_var.index = region_identifiers
 
+        adata_params = {
+            "backed": backed,
+            "X": csr_matrix((len(group_names), len(regions))),
+            "obs": df_obs,
+            "var": df_var,
+        }
+
         if backed:
-            adata = BackedBindingScoreAnnData(
-                filename=save_path,
-                X=csr_matrix((len(group_names), len(regions))),
-                obs=df_obs,
-                var=df_var,
-            )
+            adata_params["filename"] = save_path
 
-            adata.adata.obs_names = [str(xx) for xx in group_names]
-            adata.adata.var_names = region_identifiers
-            adata.uns["sites"] = str(
-                os.path.join(os.path.dirname(printer.file_path), "%s_sites.h5ad" % save_key)
-            )
+        adata = BindingScoreAnnData(**adata_params)
+        if backed:
+            adata.obs_names = [str(xx) for xx in group_names]
+            adata.var_names = region_identifiers
 
-        else:
-            adata = BindingScoreAnnData(
-                X=csr_matrix((len(group_names), len(regions))), obs=df_obs, var=df_var
-            )
-            adata.uns["sites"] = str(
-                os.path.join(os.path.dirname(printer.file_path), "%s_sites.h5ad" % save_key)
-            )
+        adata.uns["sites"] = str(
+            os.path.join(os.path.dirname(printer.file_path), f"{save_key}_sites.h5ad")
+        )
 
+        # has to read in, add key and put back
         a = printer.uns["binding score"]
         a[save_key] = str(save_path)
         printer.uns["binding score"] = a
@@ -356,14 +345,14 @@ def get_binding_score(
         globals()[unique_string + "_bindingscoremodel"] = printer.bindingScoreModel[model_key]
 
         cell_grouping = cell_grouping2cell_grouping_idx(printer, cell_grouping)
-        print("get bias")
-        seqBias = getBias.getPrecomputedBias(
-            printer.insertion_file.uns["bias_path"], regions, savePath=None
-        )
-        print("finishing bias")
-        small_chunk_size = min(int(math.ceil(len(regions) / nCores) + 1), 100)
 
-        pool = ProcessPoolExecutor(max_workers=nCores)
+        # Usually when you call this funciton, you are working with a large batch of regions, so h5 mode is faster
+        print("Start to get biases")
+        seqBias = get_bias_insertions(printer, regions, bias_mode="h5")
+        print("Finish getting biases")
+        small_chunk_size = min(int(math.ceil(len(regions) / n_jobs) + 1), 100)
+
+        pool = ProcessPoolExecutor(max_workers=n_jobs)
         p_list = []
         sites = None
         width = regions.iloc[0]["End"] - regions.iloc[0]["Start"]
@@ -376,7 +365,9 @@ def get_binding_score(
         time = 0
         if backed:
             adata.close()
-            adata = h5py.File(save_path, "r+", locking=False)
+            adata = h5py.File(
+                save_path, "r+", locking=False
+            )  # H5 make it faster than snapatac anndata here.
             adata_obsm = adata["obsm"]
         for i in bar1:
             if motif_scanner is not None:
@@ -388,6 +379,7 @@ def get_binding_score(
                     if len(site) == 0:
                         new_sites.append(site)
                         continue
+                    # site information:
                     # [bed_coord['chr'], bed_coord['start'],
                     #   bed_coord['end'], bed_coord['index'],
                     #   name, score,
@@ -462,7 +454,7 @@ def get_binding_score(
                 )
             )
 
-            if len(p_list) > nCores * cache_factor:
+            if len(p_list) > n_jobs * cache_factor:
                 for p in as_completed(p_list):
                     rs = p.result()
                     for r in rs:
@@ -475,7 +467,6 @@ def get_binding_score(
                             adata_obsm.create_dataset(identifier, data=r["BindingScore"])
                             adata_obsm[identifier].attrs["encoding-type"] = "array"
                             adata_obsm[identifier].attrs["encoding-version"] = "0.2.0"
-                            # adata.obsm[identifier] = r['BindingScore']
                         else:
                             adata.obsm[identifier] = r["BindingScore"]
                         # if motif_scanner is not None:
@@ -489,7 +480,7 @@ def get_binding_score(
                     p_list.remove(p)
                     bar.update(len(rs))
                     del rs, p
-                    if len(p_list) <= nCores:
+                    if len(p_list) <= n_jobs:
                         break
 
         if motif_scanner is not None:
@@ -551,18 +542,38 @@ def _get_footprint_score_onescale(
     return_pval,
     bigwigmode=False,
 ):
+    """
+    Calculate the footprint score for a single scale, some regions, and all pseudobulks.
+
+    Parameters:
+    region_identifiers (list): List of region identifiers.
+    cell_grouping (list): List of cell barcodes belonging to the group.
+    Tn5Bias (numpy.ndarray): Numeric vector of predicted Tn5 bias for the current region.
+    regions (pyranges.PyRanges): PyRanges object for the current region.
+    footprintRadius (int): Radius of the footprint region.
+    flankRadius (int): Radius of the flanking region (not including the footprint region).
+    smoothRadius (int): Radius of the smoothing region (not including the footprint region).
+    mode (int): Mode for retrieving the correct dispersion model.
+    id_ (str): Identifier for the current calculation.
+    unique_string (str): Unique string to access global variables.
+    return_pval (bool): Whether to return the p-value for the footprint score or the z-scores.
+    bigwigmode (bool): Whether to calculate footprint score from bigwig files.
+
+    Returns:
+    tuple: A tuple containing the footprint score (numpy.ndarray), the mode (int), and the id (str).
+    """
     result = None
     if not bigwigmode:
         insertion_profile = globals()[unique_string + "insertion_profile"]
-        printer = PyPrinter(insertion_profile=insertion_profile)
+        printer = scPrinter(insertion_profile=insertion_profile)
     else:
         dict1 = globals()[unique_string + "group_bigwig"]
 
     dispModels = globals()[unique_string + "_dispModels"]
 
-    # Create a fake pyprinter object to pass on
+    # Create a fake scPrinter object to pass on
     # Why we need a fake one?
-    # Because these functions are created to be compatible with PyPrinter centered objects
+    # Because these functions are created to be compatible with scPrinter centered objects
     # But it would be slow to pass the real printer project, because python would pickle everything
 
     for i, region_identifier in enumerate(region_identifiers):
@@ -573,7 +584,7 @@ def _get_footprint_score_onescale(
             atac = _get_group_atac_bw(dict1, cell_grouping, regions.iloc[i])
         else:
             atac = _get_group_atac(printer, cell_grouping, regions.iloc[i])
-        r, mode = getFootprint.regionFootprintScore(
+        r, mode = footprint.regionFootprintScore(
             atac,
             Tn5Bias[i],
             dispModels[str(mode)],
@@ -590,6 +601,16 @@ def _get_footprint_score_onescale(
 
 
 def _unify_modes(modes, footprintRadius, flankRadius, smoothRadius):
+    """
+    Unify modes, footprintRadius, flankRadius, and smoothRadius.
+
+    Parameters:
+    modes (int | list[int] | np.ndarray | None): Modes for footprint calculation.
+    footprintRadius (int | list[int] | np.ndarray | None): Radius of the footprint region.
+    flankRadius (int | list[int] | np.ndarray | None): Radius of the flanking region (not including the footprint region).
+    smoothRadius (int | list[int] | np.ndarray | None): Radius of the smoothing region (not including the footprint region).
+    """
+
     if modes is None:
         modes = np.arange(2, 101)
     # we want a list of modes, but also compatible with one mode
@@ -617,7 +638,7 @@ def _unify_modes(modes, footprintRadius, flankRadius, smoothRadius):
 
 
 def get_footprint_score(
-    printer: PyPrinter,
+    printer: scPrinter,
     cell_grouping: list[str] | list[list[str]] | np.ndarray | "bigwig",
     group_names: list[str] | str,
     regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
@@ -632,7 +653,7 @@ def get_footprint_score(
     smoothRadius: (
         int | list[int] | np.ndarray | None
     ) = 5,  # Radius of the smoothing region (not including the footprint region)
-    nCores: int = 16,  # Number of cores to use
+    n_jobs: int = 16,  # Number of cores to use
     save_key: str = None,
     backed: bool = True,
     overwrite: bool = False,
@@ -649,7 +670,7 @@ def get_footprint_score(
 
     Parameters
     ----------
-    printer: PyPrinter
+    printer: scPrinter
         The printer object you generated by `scprinter.pp.import_fragments` or loaded by `scprinter.load_printer`
     cell_grouping: list[list[str]] | list[str] | np.ndarray
         The cell grouping you want to visualize, specifiec by a list of the cell barcodes belong to this group, e.g.
@@ -676,7 +697,7 @@ def get_footprint_score(
     flankRadius: int | list[int] | np.ndarray | None
         The flanking radius you want to use for the footprint score calculation.
         When passing None, it will use the same value as the modes. Default is None
-    nCores: int
+    n_jobs: int
         Number of parallel process to use
     save_key: str
         The name of the anndata object you want to save the binding score result to.
@@ -684,6 +705,16 @@ def get_footprint_score(
         Whether to save the result to a backed anndata object.
     overwrite: bool
         Whether to overwrite if there is an existing result.
+    chunksize: int | None
+        How many regions to be grouped into chunks for parallel processing. None would use a heuristic rule to decide chunksize.
+    buffer_size: int | None
+        Decides how many chunks to buffer to collect the results and write to disk. None would use a heuristic rule to decide buffer_size.
+    return_pval: bool
+        Whether to return the p-value for the footprint score or the z-scores. Default is True
+    collapse_barcodes: bool
+        Whether to collapse the cell grouping into pseudobulk (like actually make the pseudobulk bigwig) before calculating footprint score.
+        It might be more efficient when dealing with a small number of groups but each group contains a lot of cells
+        (so slicing sparse array is slower than making a new bigwig and read from it).
 
 
     Returns
@@ -758,21 +789,22 @@ def get_footprint_score(
         df_var = regions
         df_var["identifier"] = region_identifiers
         df_var.index = region_identifiers
+
+        adata_params = {
+            "X": csr_matrix((len(group_names), len(regions))),
+            "obs": df_obs,
+            "var": df_var,
+            "uns": {"scales": np.array(modes)},
+        }
         if backed:
-            adata = snap.AnnData(
-                filename=save_path,
-                X=csr_matrix((len(group_names), len(regions))),
-                obs=df_obs,
-                var=df_var,
-            )
+            adata_params["filename"] = save_path
+
+        wrapper = snap.AnnData if backed else anndata.AnnData
+        adata = wrapper(**adata_params)
+        if backed:
             adata.obs_names = [str(xx) for xx in group_names]
             adata.var_names = region_identifiers
 
-        else:
-            adata = anndata.AnnData(
-                X=csr_matrix((len(group_names), len(regions))), obs=df_obs, var=df_var
-            )
-        adata.uns["scales"] = np.array(modes)
         a = printer.uns["footprints"]
         a[save_key] = str(save_path)
         printer.uns["footprints"] = a
@@ -820,7 +852,7 @@ def get_footprint_score(
             footprintRadius,
             flankRadius,
             smoothRadius,
-            nCores,
+            n_jobs,
             small_chunk_size,
             collect_num,
             return_pval=return_pval,
@@ -842,7 +874,7 @@ def get_footprint_score(
 
 
 def footprint_generator(
-    printer: PyPrinter,
+    printer: scPrinter,
     cell_grouping: list[str] | list[list[str]] | np.ndarray,
     regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
     region_width: int | None = None,
@@ -856,7 +888,7 @@ def footprint_generator(
     smoothRadius: (
         int | list[int] | np.ndarray | None
     ) = 5,  # Radius of the smoothing region (not including the footprint region)
-    nCores: int = 16,  # Number of cores to use
+    n_jobs: int = 16,  # Number of cores to use
     chunk_size: int = 8000,  # Number of regions to process in each chunk
     buffer_size: int = 100,  # Buffer Size for processed chunks in memory
     async_generator: bool = True,  # Whether to use asyncronous processing
@@ -872,7 +904,7 @@ def footprint_generator(
 
     Parameters
     ----------
-    printer: PyPrinter
+    printer: scPrinter
         The printer object you generated by `scprinter.pp.import_fragments` or loaded by `scprinter.load_printer`
     cell_grouping: list[list[str]] | list[str] | np.ndarray
         The cell grouping you want to visualize, specifiec by a list of the cell barcodes belong to this group, e.g.
@@ -896,7 +928,7 @@ def footprint_generator(
     flankRadius: int | list[int] | np.ndarray | None
         The flanking radius you want to use for the footprint score calculation.
         When passing None, it will use the same value as the modes. Default is None
-    nCores: int
+    n_jobs: int
         Number of parallel process to use
     chunk_size: int
         Number of regions to process in each chunk
@@ -907,11 +939,24 @@ def footprint_generator(
         Whether to use asyncronous processing, when True,
         the returned footprints will not keep the same order as the peaks_iter. when False,
         the returned footprints will keep the same order as the peaks_iter
+    verbose: bool
+        Whether to print progress information during the calculation
+    return_pval: bool
+        Whether to return the p-values of the footprint scores or the z-score. Default is True
+    bigwigmode: bool
+        Whether to read the insertion profile from a bigwig file. Default is False
+    collapse_barcodes: bool
+        Whether to collapse the cell grouping into pseudobulk (like actually make the pseudobulk bigwig) before calculating footprint score.
+        It might be more efficient when dealing with a small number of groups but each group contains a lot of cells
+        (so slicing sparse array is slower than making a new bigwig and read from it).
+
     Returns
     -------
     generator
         A generator that yields footprints for each chunked regions (order of the chunks can be shuffled depending on
         the param `async_generator`).
+
+
     """
 
     with warnings.catch_warnings():
@@ -959,11 +1004,9 @@ def footprint_generator(
 
         globals()[unique_string + "_dispModels"] = dispModels
 
-        Tn5Bias = getBias.getPrecomputedBias(
-            printer.insertion_file.uns["bias_path"], regions, savePath=None
-        )
+        Tn5Bias = get_bias_insertions(printer, regions, bias_mode="h5")
 
-        pool = ProcessPoolExecutor(max_workers=nCores)
+        pool = ProcessPoolExecutor(max_workers=n_jobs)
         modes = list(modes)
         multimode_footprints_all = {}
         p_list = []
@@ -1047,50 +1090,8 @@ def footprint_generator(
             bar2.close()
 
 
-def _stats_inter_versus_intra(
-    X: np.ndarray,
-    Y: np.ndarray,
-    metric: str = "euclidean",
-    summary=np.mean,
-    sample_axis=0,
-):
-    """
-
-    Parameters
-    ----------
-    X - has shape (n, scale, width)
-    Y - has shape (m, scale, width)
-
-    Returns
-    -------
-    dis (X to Y) / [dis (X to X) + dis (Y to Y) ]
-
-    """
-    x1 = np.mean(X, axis=0)
-    y1 = np.mean(Y, axis=0)
-    mask = np.isnan(x1) | np.isnan(y1) | np.isinf(x1) | np.isinf(y1)
-    X[:, mask] = 0
-    Y[:, mask] = 0
-
-    if sample_axis == 0:
-        X = X.reshape(X.shape[0], -1)
-        Y = Y.reshape(Y.shape[0], -1)
-    else:
-        X = X.reshape(-1, X.shape[-1])
-        Y = Y.reshape(-1, Y.shape[-1])
-    inter = pairwise_distances(X, Y, metric=metric)
-
-    intra1 = pairwise_distances(X, metric=metric)
-    intra2 = pairwise_distances(Y, metric=metric)
-    # print (inter, intra1, intra2)
-    # print (inter.shape, intra1.shape, intra2.shape)
-    return summary(inter) / (
-        summary(intra1) + summary(intra2) + 1
-    )  # / (summary(np.linalg.norm(intra1, axis=1)) + summary(np.linalg.norm(intra2, axis=1)) + 1)
-
-
 def get_insertions(
-    printer: PyPrinter,
+    printer: scPrinter,
     cell_grouping: list[str] | list[list[str]] | np.ndarray,
     group_names: list[str] | str,
     regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
@@ -1098,25 +1099,37 @@ def get_insertions(
     save_key: str = None,
     backed: bool = True,
     overwrite: bool = False,
-    summarize_func=None,
+    summarize_func: callable | str = None,
 ):
     """
-    Get the insertion profile for given regions and cell group
+    Get the insertion profile for given regions and cell group, and potentially pass the insertions into a summarize_func.
+    For instance, you can use it to compute the mean insertion profile for each cell group (e.g., summarize_func=partial(np.mean, axis=-1)).
+
     Parameters
     ----------
-    printer
-    cell_grouping
-    group_names
-    regions
-    region_width
-    save_key
-    backed
-    overwrite
-    summarize_func
+    printer : scPrinter
+        The scPrinter object containing the ATAC-seq data.
+    cell_grouping : list[str] | list[list[str]] | np.ndarray
+        The cell group(s) for which to retrieve insertion profiles.
+    group_names : list[str] | str
+        The name(s) of the cell group(s).
+    regions : str | Path | pd.DataFrame | pyranges.PyRanges | list[str]
+        The genomic region(s) for which to retrieve insertion profiles.
+    region_width : int | None, optional
+        The width of the genomic regions (default is None).
+    save_key : str, optional
+        The key to save the insertion profiles in the AnnData object (default is None).
+    backed : bool, optional
+        Whether to save the AnnData object in a backed HDF5 file (default is True).
+    overwrite : bool, optional
+        Whether to overwrite the existing file if it already exists (default is False).
+    summarize_func : callable | str, optional
+        A function to summarize the insertion profiles (default is None). Can also be a string.
+        Supported functions are "mean", "sum", "max", and "min".
 
     Returns
     -------
-
+    This AnnData can be accessed through `printer.insertionadata[save_key]`.
     """
 
     with warnings.catch_warnings(), torch.no_grad():
@@ -1125,6 +1138,18 @@ def get_insertions(
         if type(group_names) not in [np.ndarray, list]:
             group_names = [group_names]
             cell_grouping = [cell_grouping]
+
+        if type(summarize_func) is str:
+            if summarize_func == "mean":
+                summarize_func = partial(np.mean, axis=-1)
+            elif summarize_func == "sum":
+                summarize_func = partial(np.sum, axis=-1)
+            elif summarize_func == "max":
+                summarize_func = partial(np.max, axis=-1)
+            elif summarize_func == "min":
+                summarize_func = partial(np.min, axis=-1)
+            else:
+                raise ValueError("summarize_func must be either mean, sum, max or min")
 
         regions = regionparser(regions, printer, region_width)
         region_identifiers = df2regionidentifier(regions)
@@ -1164,24 +1189,23 @@ def get_insertions(
         df_var = regions
         df_var["identifier"] = region_identifiers
         df_var.index = region_identifiers
+
+        adata_params = {
+            "X": csr_matrix((len(group_names), len(regions))),
+            "obs": df_obs,
+            "var": df_var,
+        }
         if backed:
-            adata = snap.AnnData(
-                filename=save_path,
-                X=csr_matrix((len(group_names), len(regions))),
-                obs=df_obs,
-                var=df_var,
-            )
+            adata_params["filename"] = save_path
+        wrapper = snap.AnnData if backed else anndata.AnnData
+        adata = wrapper(**adata_params)
+        if backed:
             adata.obs_names = [str(xx) for xx in group_names]
             adata.var_names = region_identifiers
 
-        else:
-            adata = anndata.AnnData(
-                X=csr_matrix((len(group_names), len(regions))), obs=df_obs, var=df_var
-            )
-
-        a = printer.uns["footprints"]
+        a = printer.uns["insertions"]
         a[save_key] = str(save_path)
-        printer.uns["footprints"] = a
+        printer.uns["insertions"] = a
         cell_grouping = cell_grouping2cell_grouping_idx(printer, cell_grouping)
         if backed:
             adata.close()

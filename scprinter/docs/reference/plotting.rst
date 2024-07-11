@@ -47,3 +47,4 @@ Synced real-time visualization
    :toctree: _autosummary
 
    pl.sync_footprints
+   pl.sync_footprints_v2

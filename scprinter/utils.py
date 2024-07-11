@@ -8,6 +8,7 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
+import anndata
 import h5py
 import MOODS
 import numpy as np
@@ -19,10 +20,13 @@ import snapatac2 as snap
 import torch
 from pyfaidx import Fasta
 from scipy.sparse import csr_matrix
+from tqdm.auto import tqdm
 
 
 def DNA_one_hot(sequence, alphabet="ACGT", dtype="float", device="cpu"):
-    """Convert a DNA sequence string into a one-hot encoding tensor.
+    """
+    Convert a DNA sequence string into a one-hot encoding tensor.
+
     Parameters
     ----------
     sequence : str
@@ -48,18 +52,40 @@ def DNA_one_hot(sequence, alphabet="ACGT", dtype="float", device="cpu"):
 
 
 def zscore2pval(footprint):
-    pval = scipy.stats.norm.cdf(footprint, 0, 1)
-    pval = -np.log10(pval)
-    pval[np.isnan(pval)] = 0
-    return pval
+    """
+    Convert z-scores to p-values from z-test
+
+    Parameters
+    ----------
+    footprint: np.ndarray | torch.Tensor | torch.cuda.FloatTensor
+        Z-scores of the footprint scores.
+
+    Returns
+    -------
+    pval: np.ndarray | torch.Tensor | torch.cuda.FloatTensor
+        The -log 10 p-values
+    """
+    if type(footprint) in [torch.Tensor, torch.cuda.FloatTensor]:
+        return zscore2pval_torch(footprint)
+    else:
+        pval = scipy.stats.norm.cdf(footprint, 0, 1)
+        pval = -np.log10(pval)
+        pval[np.isnan(pval)] = 0
+        return pval
 
 
 def zscore2pval_torch(footprint):
-    # pval = torch.distributions.Normal(0, 1).cdf(footprint)
-    # pval = -torch.log10(pval)
-    # pval[torch.isnan(pval)] = 0
-    # # pval = pval.astype(footprint.dtype)
-    # return pval
+    """
+    Convert z-scores to p-values from z-test (pytorch version)
+    Parameters
+    ----------
+    footprint
+
+    Returns
+    -------
+    torch.tensor of -log 10 p-values
+
+    """
     # Calculate the CDF of the normal distribution for the given footprint
     pval = torch.distributions.Normal(0, 1).cdf(footprint)
 
@@ -88,6 +114,13 @@ def get_stats_for_genome(fasta_file):
     fasta_file: str
         Path to the fasta file
 
+    Returns
+    -------
+    chrom_sizes: dict
+        Dictionary of chromosome names and their lengths
+    bg: tuple
+        Tuple of background frequencies of ACGT
+
     """
     genome_seq = Fasta(fasta_file)
     b = ""
@@ -101,6 +134,18 @@ def get_stats_for_genome(fasta_file):
 
 
 def GC_content(dna_string):
+    """
+    Calculate the GC content of a DNA string
+
+    Parameters
+    ----------
+    dna_string: str
+        DNA sequence string
+
+    Returns
+    -------
+    tuple of (A, C, G, T) counts
+    """
     a, c, g, t = 0, 0, 0, 0
     # Iterate over each character in the string and increment the corresponding count
     for nucleotide in dna_string:
@@ -116,26 +161,65 @@ def GC_content(dna_string):
     return a, c, g, t
 
 
-def get_peak_bias(region, genome):
-    peaks = region
+def get_peak_bias(
+    data: anndata.AnnData | str | Path | pd.DataFrame | pyranges.PyRanges | list[str], genome
+):
+    """
+    Calculate the GC content of the peaks (chromvar function)
+
+    Parameters
+    ----------
+    data: anndata.AnnData | pd.DataFrame
+        AnnData object containing cell x peak data. Or anything that the regionparser function can parse.
+    genome: Genome
+        Genome object
+
+    Returns
+    -------
+    gc content of the peaks (from 0-1)
+    """
+    adata = data
+    if type(adata) is anndata.AnnData:
+        peaks = regionparser(list(adata.var_names))
+    else:
+        peaks = regionparser(adata)
+
     gc_contents = []
     overall_freq = [0, 0, 0, 0]
-    for chrom, start, end in peaks.iloc[:, 0:3].values:
+    for chrom, start, end in tqdm(peaks.iloc[:, 0:3].values, desc="Fetching GC content"):
         seq = genome.fetch_seq(chrom, start, end).upper()
         a, c, g, t = GC_content(seq)
         overall_freq[0] += a
         overall_freq[1] += c
         overall_freq[2] += g
         overall_freq[3] += t
-        gc_contents.append((g + c) / (a + c + g + t))
+        if (a + c + g + t) == 0:
+            gc_contents.append(0.5)
+        else:
+            gc_contents.append((g + c) / (a + c + g + t))
     gc_contents = np.asarray(gc_contents)
     gc_contents[np.isnan(gc_contents)] = 0.5
-
+    overall_freq = np.array(overall_freq)
     overall_freq = overall_freq / np.sum(overall_freq)
-    return overall_freq
+    if type(adata) is not anndata.AnnData:
+        return gc_contents, overall_freq
+
+    adata.var["gc_content"] = gc_contents
+    adata.uns["bg_freq"] = overall_freq
+    return None
 
 
 def get_genome_bg(genome):
+    """
+    Get the background nucleotide frequency of the genome
+    Parameters
+    ----------
+    genome
+
+    Returns
+    -------
+    Background nucleotide frequency
+    """
     genome_seq = Fasta(genome.fetch_fa())
     b = ""
     for chrom in genome_seq.keys():
@@ -160,14 +244,19 @@ def regionparser(
         - a pandas dataframe with the first three columns correspond to [chrom, start, end],
         - a pyranges object of the regions,
         - or a list of region identifiers, e.g. `['chr1:1000-2000', 'chr1:3000-4000']`
-        - or a list of gene identifiers, e.g. `['Gene:CTCF', 'Gene:GATA1']`,
-        the transcript start site will be used as the region center
+        - or a list of gene identifiers, e.g. `['Gene:CTCF', 'Gene:GATA1']`, the transcript start site will be used as the region center
 
-    printer: PyPrinter
+
+    printer: scPrinter
         The printer object that contains the gff information. It is required if the regions are specified by gene names.
     width: int | None
         The width of the regions. When specified, the regions will be resized to the specified width.
         If None, the width will be the same as the input regions, and would be 1000bp when regions are specified by gene names.
+
+    Returns
+    -------
+    regions: pd.DataFrame
+        The regions dataframe with the first three columns ['Chromosome', 'Start', 'End']
     """
     if type(regions) is list:
         if ":" in regions[0] and "-" in regions[0]:
@@ -219,18 +308,61 @@ def regionparser(
     return regions
 
 
-def frags_to_insertions(data, split=False):
-    x = data.obsm["fragment_paired"]
-    insertion = csr_matrix(
-        (
-            np.ones(len(x.indices) * 2, dtype="uint16"),
-            np.stack([x.indices, x.indices + x.data], axis=-1).reshape((-1)),
-            x.indptr * 2,
-        ),
-        shape=x.shape,
-    )
-    insertion.sort_indices()
-    insertion.sum_duplicates()
+def frags_to_insertions(
+    data, split: bool = False, extra_plus_shift: int = 0, extra_minus_shift: int = 0
+):
+    """
+    Underlying function that transform snapatac fragment format to insertions
+
+    Parameters
+    ----------
+    data: the anndata object that contains "fragment_paired" or "fragment_single" in the obsm
+    split: split the insertions into "chr1_insertions", "chr2_insertions", ...,
+    extra_plus_shift: the extra shift for the + strand (left of the paired end )
+    extra_minus_shift: the extra shift for the - strand (right of the paired end)
+
+    Returns
+    -------
+    insertions
+
+    """
+    if "fragment_paired" in data.obsm:
+        x = data.obsm["fragment_paired"]
+        insertion = csr_matrix(
+            (
+                np.ones(len(x.indices) * 2, dtype="uint16"),
+                np.stack(
+                    [x.indices + extra_plus_shift, x.indices + x.data + extra_minus_shift], axis=-1
+                ).reshape((-1)),
+                x.indptr * 2,
+            ),
+            shape=x.shape,
+        )
+        insertion.sort_indices()
+        insertion.sum_duplicates()
+    elif "fragment_single" in data.obsm:
+        # The snapatac2 format fragment_single stores the start end of the reads as the column indices, data = read length
+        # positive = + strand, negative read length = - strand
+        # I assumed that the shift hasn't been done at all.
+        x = data.obsm["fragment_single"]
+        indices = np.copy(x.indices)
+
+        mask = x.data > 0
+        indices[mask] += extra_plus_shift
+        indices[~mask] += 1 + extra_minus_shift
+        insertion = csr_matrix(
+            (
+                np.ones(len(x.indices), dtype="uint16"),
+                indices,
+                x.indptr,
+            ),
+            shape=x.shape,
+        )
+        insertion.sort_indices()
+        insertion.sum_duplicates()
+    else:
+        raise ValueError("No fragment data found in the obsm")
+
     if split:
         indx = list(
             np.cumsum(data.uns["reference_sequences"]["reference_seq_length"]).astype("int")
@@ -269,87 +401,25 @@ def check_snap_insertion(shift_left=0, shift_right=0):
     return v[100] == 100
 
 
-def check_snap_insertion_old(shift_left=0, shift_right=0):
-    temp_fragments = gzip.open("temp_fragments.tsv.gz", "wt")
-    for i in range(100):
-        temp_fragments.write("chr1\t%d\t%d\tbarcode1\n" % (4, 4))
-    temp_fragments.close()
-    sys.stdout.flush()
-    data = snap.pp.import_data(
-        "temp_fragments.tsv.gz",
-        genome=snap.genome.hg38,
-        min_num_fragments=0,
-        min_tsse=0,
-        shift_left=shift_left,
-        shift_right=shift_right,
-    )
-    v = np.array(data.obsm["insertion"][0, :10].toarray()).reshape((-1))
-    os.remove("temp_fragments.tsv.gz")
-    # If true: The fixed version I compiled or they fixed it, else not fixed
-    return v[4] == 200
-
-
-def create_consistent_frags(pathToFrags, extra_plus_shift, extra_minus_shift):
-    flag_ = check_snap_insertion()
-    output = "temp.fragments.tsv.gz"
-    if flag_ and extra_plus_shift == 0 and extra_minus_shift == 0:
-        if len(pathToFrags) == 1:
-            return pathToFrags[0], False
-        else:
-            command = "cat %s > %s" % (" ".join(pathToFrags), output)
-            print(command)
-            os.system(command)
-            # for path in pathToFrags:
-            #     command = 'sort -k4, 4 %s > %s' % (path, output)
-            #     os.system(command)
-            return output, True
-    else:
-        plus1_flag = 0 if flag_ else 1
-        print("Fixing offset & merging fragments")
-        for path in pathToFrags:
-            if ".gz" in path:
-                csv_file = gzip.open(path, "rb")
-            else:
-                csv_file = open(path, "r")
-
-            reader = pd.read_csv(csv_file, chunksize=100000000, sep="\t", header=None)
-            # chrom, start, end, fragments
-            # read and process chunk by chunk
-            for chunk_fragments in reader:
-                chunk_fragments[1] += extra_plus_shift
-                chunk_fragments[2] += extra_minus_shift + plus1_flag
-                chunk_fragments.to_csv(output, index=False, header=None, sep="\t", mode="a")
-        return output, True
-
-
-def split_insertion_profile(csr_matrix_insertion, chrom, start, end, to_csc=False):
-    # print ("Processing insertion profile")
-    if to_csc:
-        return {
-            chrom: csr_matrix_insertion[:, start:end].tocsc()
-            for chrom, start, end in zip(chrom, start, end)
-        }
-    else:
-        return {
-            chrom: csr_matrix_insertion[:, start:end]
-            for chrom, start, end in zip(chrom, start, end)
-        }
-
-
 def cell_grouping2cell_grouping_idx(printer, cell_grouping: list[list[str]] | np.ndarray):
     """
     Convert a cell grouping from string based to index based.
-    E.g., you pass a list of lists of barcodes `[['ACAGTGGT,ACAGTGGT,ACTTGATG,BUENSS112'] , ['ACAGTGGT,ACAGTGGT,TACTAGTC,BUENSS112', 'ACAGTGGT,ACAGTGGT,TAGTGACT,BUENSS112','ACAGTGGT,ACAGTGGT,TCCGTCTT,BUENSS112']]`,
-     and you get a list of lists of indices [[0], [1,2,3]] which corresponds to the index in the single cell insertion profile.
+    E.g., you pass a list of lists of barcodes `[['ACAGTGGT,ACAGTGGT,ACTTGATG,BUENSS112'] , ['ACAGTGGT,ACAGTGGT,TACTAGTC,BUENSS112', 'ACAGTGGT,ACAGTGGT,TAGTGACT,BUENSS112','ACAGTGGT,ACAGTGGT,TCCGTCTT,BUENSS112']]`, and you get a list of lists of indices [[0], [1,2,3]] which corresponds to the index in the single cell insertion profile.
 
     Parameters
     ----------
-    printer: PyPrinter
-        The Pyprinter object
+    printer: scPrinter
+        The scPrinter object
 
     cell_grouping: list[list[str]] | np.ndarray
         The cell grouping in string based format
+
+    Returns
+    -------
+    cell_grouping_idx: list[list[int]]
+        The cell grouping in index based format
     """
+
     # concatenate all the embeddings
     barcodes_all = np.concatenate(cell_grouping)
     # get the unique ones
@@ -370,8 +440,8 @@ def df2cell_grouping(printer, barcodeGroups):
 
     Parameters
     ----------
-    printer: PyPrinter
-        The Pyprinter object
+    printer: scPrinter
+        The scPrinter object
     barcodeGroups: pd.DataFrame
         The dataframe of barcodes and their groupings. It needs to at least have two columns,
         where the first column is the barcode and the second column is the group name.
@@ -395,24 +465,6 @@ def df2cell_grouping(printer, barcodeGroups):
     for group in uniq_groups:
         grouping.append(list(bar[groups == group]))
     return grouping, uniq_groups
-
-
-def valide_regions(bed: pd.DataFrame, genome, inplace=True):
-
-    chromsize = genome.chrom_sizes
-    valid = []
-    for chrom, start, end in zip(bed.iloc[:, 0], bed.iloc[:, 1], bed.iloc[:, 2]):
-        if chrom not in chromsize:
-            valid.append(False)
-        elif start < 0 or end > chromsize[chrom]:
-            valid.append(False)
-        else:
-            valid.append(True)
-    valid = np.array(valid)
-    if inplace:
-        return bed.loc[valid, :]
-    else:
-        return valid
 
 
 def resize_bed_df(
@@ -484,6 +536,20 @@ def dftopyranges(df):
 
 
 def df2regionidentifier(df):
+    """
+    Convert a dataframe of regions to a list of region identifiers such as "chr1:0-1000".
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        A pandas DataFrame with columns ['Chromosome', 'Start', 'End'] or ['chrom', 'start', 'end'].
+        If these columns are not present, assume the first three columns are the chromosome, start, and end.
+
+    Returns
+    -------
+    list of str
+        A list of region identifiers in the format "chr:start-end".
+    """
     if "Chromosome" in df.columns and "Start" in df.columns and "End" in df.columns:
         return np.array(
             [f"{c}:{s}-{e}" for c, s, e in zip(df["Chromosome"], df["Start"], df["End"])]
@@ -578,3 +644,58 @@ def downloadDispModel():
 
 def downloadTFBSModel():
     return None
+
+
+# Doing the same thing as conv in R, but more generalizable
+def rz_conv(a, n=2):
+    if n == 0:
+        return a
+    # a can be shape of (batch, sample,...,  x) and x will be the dim to be conv on
+    # pad first:
+    shapes = np.array(a.shape)
+    shapes[-1] = n
+    a = np.concatenate([np.zeros(shapes), a, np.zeros(shapes)], axis=-1)
+    ret = np.cumsum(a, axis=-1)
+    # ret[..., n * 2:] = ret[..., n * 2:] - ret[..., :-n * 2]
+    # ret = ret[..., n * 2:]
+    ret = ret[..., n * 2 :] - ret[..., : -n * 2]
+    return ret
+
+
+def strided_axis0(a, L):
+    """
+    This function is used to create a view of a 1D array with a sliding window of length L
+    along the first axis. This is useful for creating a view of a 1D array with a sliding window
+    Parameters
+    ----------
+    a: np.ndarray
+        input array of shape (N, M, ...)
+    L: int
+        sliding window length
+
+    Returns
+    -------
+    np.ndarray
+        output array of shape (N-L+1, L, M, ...)
+
+    """
+    # Store the shape and strides info
+    shp = a.shape
+    s = a.strides
+
+    # Compute length of output array along the first axis
+    nd0 = shp[0] - L + 1
+
+    # Setup shape and strides for use with np.lib.stride_tricks.as_strided
+    # and get (n+1) dim output array
+    shp_in = (nd0, L) + shp[1:]
+    strd_in = (s[0],) + s
+    return np.lib.stride_tricks.as_strided(a, shape=shp_in, strides=strd_in)
+
+
+# This is a fast trick to turn sth shape of (x,y,z) to (x,y,z-L+1, L)
+# by tiling windows on the last axis.
+def strided_lastaxis(a, L):
+    s0, s1, s2 = a.strides
+    l, m, n = a.shape
+    return np.lib.stride_tricks.as_strided(a, shape=(l, m, n - L + 1, L), strides=(s0, s1, s2, s2))

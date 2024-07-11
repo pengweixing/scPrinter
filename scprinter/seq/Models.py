@@ -162,6 +162,7 @@ class scFootprintBPNet(nn.Module):
         lora_count_cnn=False,
         method="lora",
         n_lora_layers=0,
+        coverage=True,
     ):
         super().__init__()
         self.dna_cnn_model = dna_cnn_model
@@ -171,12 +172,32 @@ class scFootprintBPNet(nn.Module):
         self.output_len = output_len
 
         if embeddings is not None:
+            if coverage:
+                coverages = embeddings[:, -1][:, None]
+                embeddings = embeddings[:, :-1]
+            else:
+                coverages = None
+
+        if embeddings is not None:
             self.embeddings = nn.Embedding(embeddings.shape[0], embeddings.shape[1])
             self.embeddings.weight.data = torch.from_numpy(embeddings).float()
             self.embeddings.weight.requires_grad = False
+            if coverage:
+                self.coverages = (
+                    nn.Embedding(coverages.shape[0], coverages.shape[1])
+                    if coverages is not None
+                    else None
+                )
+                self.coverages.weight.data = torch.from_numpy(coverages).float()
+                self.coverages.weight.requires_grad = False
+            else:
+                self.coverages = None
+        else:
+            self.embeddings = None
+            self.coverages = None
 
         if method == "lora":
-            wrapper = Conv1dLoRA
+            wrapper = Conv1dLoRAv2
         else:
             wrapper = BiasInjection
 
@@ -239,18 +260,22 @@ class scFootprintBPNet(nn.Module):
                 hidden_dim=hidden_dim,
                 n_layers=n_lora_layers,
             )
+        if self.coverages is not None:
+            self.profile_cnn_model = CoverageAdjustedFootprints_head(
+                self.profile_cnn_model, self.coverages
+            )
 
     def return_origin(self):
         self = self.to("cpu")
-        if isinstance(self.profile_cnn_model.linear, nn.Linear):
-            print("translating linear into conv1d")
-            weight = self.profile_cnn_model.linear.weight.data
-            print(weight.shape)
-            bias = self.profile_cnn_model.linear.bias.data
-            self.profile_cnn_model.linear = Conv1dWrapper(weight.shape[1], weight.shape[0], 1)
-            print(self.profile_cnn_model.linear.conv.weight.shape)
-            self.profile_cnn_model.linear.conv.weight.data = weight.unsqueeze(-1)
-            self.profile_cnn_model.linear.conv.bias.data = bias
+        # if isinstance(self.profile_cnn_model.linear, nn.Linear):
+        #     print("translating linear into conv1d")
+        #     weight = self.profile_cnn_model.linear.weight.data
+        #     print(weight.shape)
+        #     bias = self.profile_cnn_model.linear.bias.data
+        #     self.profile_cnn_model.linear = Conv1dWrapper(weight.shape[1], weight.shape[0], 1)
+        #     print(self.profile_cnn_model.linear.conv.weight.shape)
+        #     self.profile_cnn_model.linear.conv.weight.data = weight.unsqueeze(-1)
+        #     self.profile_cnn_model.linear.conv.bias.data = bias
 
         model_clone = deepcopy(self)
         if not isinstance(model_clone.dna_cnn_model.conv, Conv1dWrapper):
@@ -261,6 +286,10 @@ class scFootprintBPNet(nn.Module):
         if not isinstance(model_clone.hidden_layer_model.layers[0].module.conv2, Conv1dWrapper):
             for layer in model_clone.hidden_layer_model.layers:
                 layer.module.conv2 = layer.module.conv2.layer
+
+        if isinstance(model_clone.profile_cnn_model, CoverageAdjustedFootprints_head):
+            model_clone.profile_cnn_model = model_clone.profile_cnn_model.footprints_head
+
         if not isinstance(model_clone.profile_cnn_model.conv_layer, Conv1dWrapper):
             model_clone.profile_cnn_model.conv_layer = (
                 model_clone.profile_cnn_model.conv_layer.layer
@@ -271,15 +300,15 @@ class scFootprintBPNet(nn.Module):
         return model_clone
 
     def collapse(self, cell, turn_on_grads=True):
-        if isinstance(self.profile_cnn_model.linear, nn.Linear):
-            print("translating linear into conv1d")
-            weight = self.profile_cnn_model.linear.weight.data
-            print(weight.shape)
-            bias = self.profile_cnn_model.linear.bias.data
-            self.profile_cnn_model.linear = Conv1dWrapper(weight.shape[1], weight.shape[0], 1)
-            print(self.profile_cnn_model.linear.conv.weight.shape)
-            self.profile_cnn_model.linear.conv.weight.data = weight.unsqueeze(-1)
-            self.profile_cnn_model.linear.conv.bias.data = bias
+        # if isinstance(self.profile_cnn_model.linear, nn.Linear):
+        #     print("translating linear into conv1d")
+        #     weight = self.profile_cnn_model.linear.weight.data
+        #     print(weight.shape)
+        #     bias = self.profile_cnn_model.linear.bias.data
+        #     self.profile_cnn_model.linear = Conv1dWrapper(weight.shape[1], weight.shape[0], 1)
+        #     print(self.profile_cnn_model.linear.conv.weight.shape)
+        #     self.profile_cnn_model.linear.conv.weight.data = weight.unsqueeze(-1)
+        #     self.profile_cnn_model.linear.conv.bias.data = bias
 
         # self = self.to('cpu')
         model_clone = deepcopy(self)
@@ -291,14 +320,17 @@ class scFootprintBPNet(nn.Module):
         if not isinstance(model_clone.hidden_layer_model.layers[0].module.conv2, Conv1dWrapper):
             for layer in model_clone.hidden_layer_model.layers:
                 layer.module.conv2 = layer.module.conv2.collapse_layer(cell)
-        if not isinstance(model_clone.profile_cnn_model.conv_layer, Conv1dWrapper):
-            model_clone.profile_cnn_model.conv_layer = (
-                model_clone.profile_cnn_model.conv_layer.collapse_layer(cell)
-            )
-        if not isinstance(model_clone.profile_cnn_model.linear, Conv1dWrapper):
-            model_clone.profile_cnn_model.linear = (
-                model_clone.profile_cnn_model.linear.collapse_layer(cell)
-            )
+        if isinstance(model_clone.profile_cnn_model, CoverageAdjustedFootprints_head):
+            # print ("collapse coverage adjusted")
+            model = model_clone.profile_cnn_model.footprints_head
+            model_clone.profile_cnn_model.collapse_layer(cell)
+        else:
+            model = model_clone.profile_cnn_model
+
+        if not isinstance(model.conv_layer, Conv1dWrapper):
+            model.conv_layer = model.conv_layer.collapse_layer(cell)
+        if not isinstance(model.linear, Conv1dWrapper):
+            model.linear = model.linear.collapse_layer(cell)
         if turn_on_grads:
             for p in model_clone.parameters():
                 p.requires_grad = True
@@ -360,6 +392,7 @@ class scFootprintBPNet(nn.Module):
         use_wandb=False,
         accumulate_grad=1,
         batch_size=None,
+        coverage_warming=0,
     ):
         """
         This is the fit function for BPNet
@@ -375,7 +408,7 @@ class scFootprintBPNet(nn.Module):
         early_stopping
 
         Returns
-        -------
+        # -------
 
         """
         batch_size = training_data.batch_size if batch_size is None else batch_size
@@ -400,23 +433,54 @@ class scFootprintBPNet(nn.Module):
             print("Using amp")
         scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
         # min_scale = 128
+        if coverage_warming > 0:
+            # backup = self.embeddings.weight.data.clone()
+            # only using coverage to finetune...
+            # self.embeddings.weight.data[:] *= 0
+            requires_grads = {}
+            for name, param in self.named_parameters():
+                if name in requires_grads:
+                    print("duplicated name", name, param.requires_grad, requires_grads[name])
+                requires_grads[name] = param.requires_grad
+                param.requires_grad = False
+            for p in self.profile_cnn_model.adjustment_count.parameters():
+                p.requires_grad = True
+            for p in self.profile_cnn_model.adjustment_footprint.parameters():
+                p.requires_grad = True
+
         for epoch in range(max_epochs):
             bar = trange(
                 validation_freq,
-                desc=" - (Training) {epoch}".format(epoch=epoch + 1),
+                desc=(
+                    " - (Training) {epoch}".format(epoch=epoch + 1) + " warming"
+                    if (coverage_warming > 0 and epoch <= coverage_warming)
+                    else ""
+                ),
                 leave=False,
                 dynamic_ncols=True,
             )
             moving_avg_loss = 0
             iteration = 0
 
+            if epoch > coverage_warming and coverage_warming > 0:
+                for name, param in self.named_parameters():
+                    param.requires_grad = requires_grads[name]
+                for p in self.profile_cnn_model.adjustment_count.parameters():
+                    p.requires_grad = False
+                for p in self.profile_cnn_model.adjustment_footprint.parameters():
+                    p.requires_grad = False
+
             training_index_all = np.random.permutation(len(training_data))
             training_data_epoch_loader = training_data.resample()
             for data in training_data_epoch_loader:
                 try:
-                    autocast_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=self.amp)
+                    autocast_context = torch.autocast(
+                        device_type="cuda", dtype=torch.bfloat16, enabled=use_amp
+                    )
                 except RuntimeError:
-                    autocast_context = torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.amp)
+                    autocast_context = torch.autocast(
+                        device_type="cuda", dtype=torch.float16, enabled=use_amp
+                    )
                 with autocast_context:
                     random_modes = np.random.permutation(modes)[:30]
                     select_index = torch.as_tensor([index_all.index(mode) for mode in random_modes])
@@ -459,7 +523,9 @@ class scFootprintBPNet(nn.Module):
 
                     loss_coverage = F.mse_loss(coverage, pred_coverage)
                     desc_str += " Coverage Loss: {loss:.2f}".format(loss=loss_coverage.item())
-
+                    desc_str += (
+                        " warming" if (coverage_warming > 0 and epoch <= coverage_warming) else ""
+                    )
                     loss = (loss_footprint + loss_coverage) / accumulate_grad
                     if np.isnan(loss.item()):
                         ema, optimizer, scaler = self.load_train_state_dict(

@@ -5,16 +5,25 @@ Core scprinter class
 .. currentmodule:: scprinter
 
 
-Scprinter Object
+scprinter Object
 ~~~~~~~~~~~~~~~~
 .. autosummary::
     :toctree: _autosummary
 
-    io.PyPrinter
+    io.scPrinter
 
-IO
-~~~~~~
+Load scPrinter object
+~~~~~~~~~~~~~~~~~~~~~
 .. autosummary::
     :toctree: _autosummary
 
     load_printer
+
+IO related to read insertion profile form the scPrinter object
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. autosummary::
+    :toctree: _autosummary
+
+    io.get_region_atac
+    io.get_group_atac
+    io.get_bias_insertions

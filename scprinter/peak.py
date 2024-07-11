@@ -1,10 +1,12 @@
+import gzip
 import math
 import multiprocessing as mpl
 import os
 import subprocess
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from functools import partial
+from typing import Literal
 
 import bioframe
 import numpy as np
@@ -15,6 +17,25 @@ from tqdm.contrib.concurrent import process_map
 
 
 def prep_peak(file, chrs, fdr_threshold, use_quantile_scores, pad, blacklist, chrom_sizes):
+    """
+    Prepares a peak file by importing blacklisted regions, filtering peaks by FDR cut-off,
+    padding peak summits, removing blacklisted peaks and peaks out of bounds, and adding a column
+    of quantile-normalized MACS scores if specified.
+
+    Parameters:
+
+    file (str): The path to the peak file.
+    chrs (list): A list of valid chromosome IDs.
+    fdr_threshold (float): The FDR cut-off value.
+    use_quantile_scores (bool): A flag indicating whether to use quantile-normalized MACS scores.
+    pad (int): The padding value for peak summits.
+    blacklist (str): The path to the blacklist file.
+    chrom_sizes (dict): A dictionary containing chromosome sizes.
+
+    Returns:
+    peaksR (DataFrame): A DataFrame containing the prepared peak information.
+    """
+
     file, name = file
     # Import blacklisted regions to remove if overlapping peaks
     bdf = pd.read_table(blacklist, header=None)[[0, 1, 2]]
@@ -99,20 +120,25 @@ def prep_peak(file, chrs, fdr_threshold, use_quantile_scores, pad, blacklist, ch
 
 
 def cluster_remove_peaks_bioframe(df=None, by="score", decreasing=True):
+    """
+    This function clusters and removes duplicate peaks from a DataFrame based on a specified column.
+
+    Parameters:
+    df (DataFrame): The input DataFrame containing peak information. It should contain a "cluster" column.
+    by (str): The column name to sort the peaks by. Default is "score".
+    decreasing (bool): Whether to sort the peaks in descending order. (keep the ones with higher scores) Default is True.
+
+    Returns:
+    DataFrame: The modified DataFrame with duplicate peaks removed.
+    """
+
     # Sort the ranges by sequence levels (chromosomes)
     df = bioframe.cluster(df)
     df.sort_values(by=[by], ascending=not decreasing, inplace=True)
-    # # Remove duplicated ranges based on cluster IDs
+    # Remove duplicated ranges based on cluster IDs
     df.drop_duplicates(subset=["cluster"], inplace=True)
-    # df = (
-    #     df.groupby("cluster")
-    #     .agg({"chrom": "first", "start":"first", "end":"first", "score":"first",
-    #           "cell": ", ".join, "name": ", ".join,
-    #           "cluster_start":"first", "cluster_end":"first"})
-    #     .reset_index()
-    # )
 
-    # # Remove the cluster column from the DataFrame
+    # Remove the cluster column from the DataFrame
     df.drop(columns=["cluster", "cluster_start", "cluster_end"], inplace=True)
 
     return df
@@ -131,6 +157,29 @@ def make_peaks_df_bioframe(
     final_peak_width=None,
     max_iter=1000,
 ):
+    """
+    Function to process MACS2 summit files, filter overlapping peaks,
+    and generate a summary of the final peaks.
+
+    Parameters:
+    - summit_files (List[str]): A list of paths to the MACS2 summit files.
+    - names (List[str]): A list of names corresponding to the summit files.
+    - peak_width (int): The width of the peaks.
+    - genome (GenomeObject): An object representing the genome.
+    - filter_chr (bool): A boolean indicating whether to filter chromosomes.
+    - blacklist_peak_width (Optional[int]): The width of the blacklist peaks.
+    - n (int): The number of peaks to return.
+    - fdr_threshold (float): The false discovery rate threshold.
+    - use_quantile_scores (bool): A boolean indicating whether to use quantile scores for filtering.
+    - final_peak_width (Optional[int]): The width of the final peaks.
+    - max_iter (int): The maximum number of iterations for peak clearing.
+
+    Returns:
+    - cleaned_peaks (pd.DataFrame): A DataFrame containing the cleaned peaks. (Bed format)
+    - summary (pd.DataFrame): A DataFrame containing a summary of the cleaned peaks. (Contains for summary statistics)
+
+    """
+
     chrom_sizes = genome.chrom_sizes
     blacklist = genome.fetch_blacklist()
     if blacklist_peak_width is None:
@@ -167,18 +216,22 @@ def make_peaks_df_bioframe(
         blacklist=blacklist,
         chrom_sizes=chrom_sizes,
     )
-
-    peaks = list(
-        process_map(
-            func,
-            zip(summit_files, names),
-            max_workers=mpl.cpu_count(),
-            chunksize=math.ceil(len(summit_files) / mpl.cpu_count()),
-            total=len(summit_files),
+    cpu_num = min(mpl.cpu_count(), len(summit_files))
+    if cpu_num == 1:
+        peaks = func((summit_files[0], names[0]))
+    else:
+        peaks = list(
+            process_map(
+                func,
+                zip(summit_files, names),
+                max_workers=cpu_num,
+                chunksize=math.ceil(len(summit_files) / cpu_num),
+                total=len(summit_files),
+            )
         )
-    )
 
-    peaks = pd.concat(peaks, axis=0)
+        peaks = pd.concat(peaks, axis=0)
+
     peaks = peaks.iloc[np.random.permutation(len(peaks))]
     if blacklist_pad != pad:
         peaks_center = (peaks["start"] + peaks["end"]) // 2
@@ -284,9 +337,46 @@ def clean_macs2(
     final_peak_width=None,
     max_iter=1000,
 ):
+    """
+    This function reads in MACS2 summit files, filters overlapping peaks,
+    and generates a summary of the final peaks.
+
+    Parameters
+    ----------
+    name : str or List[str]
+        The name(s) corresponding to the summit files.
+    outdir : str
+        The output directory where the summit files are located.
+    peak_width : int
+        The width of the peaks.
+    genome : GenomeObject
+        An object representing the genome.
+    filter_chr : bool, optional
+        A boolean indicating whether to filter chromosomes. Default is False.
+    blacklist_peak_width : int, optional
+        The width of the blacklist peaks. Default is None.
+    n : int, optional
+        The number of peaks to return. Default is 999999999.
+    fdr_threshold : float, optional
+        The false discovery rate threshold. Default is 0.01.
+    use_quantile_scores : bool, optional
+        A boolean indicating whether to use quantile scores for filtering. Default is False.
+    final_peak_width : int, optional
+        The width of the final peaks. Default is None.
+    max_iter : int, optional
+        The maximum number of iterations for peak clearing. Default is 1000.
+
+    Returns
+    -------
+    cleaned_peaks : pd.DataFrame
+        A DataFrame containing the cleaned peaks in Bed format.
+    """
+
+    if type(name) is not list:
+        name = [name]
     cleaned_peaks, _ = make_peaks_df_bioframe(
-        [os.path.join(outdir, name + "_summits.bed")],
-        [name],
+        [os.path.join(outdir, n + "_summits.bed") for n in name],
+        name,
         peak_width,
         genome,
         filter_chr=filter_chr,
@@ -300,29 +390,72 @@ def clean_macs2(
     return cleaned_peaks
 
 
-def macs2(frag_file, name, outdir, format="BEDPE"):
-    commands = [
-        "macs2",
-        "callpeak",
-        "--nomodel",
-        "-t",
-        frag_file,
-        "--outdir",
-        outdir,
-        "-n",
-        name,
-        "-f",
-        format,
-        "--nolambda",
-        "--keep-dup",
-        "all",
-        "--call-summits",
-        "--nomodel",
-        "-B",
-        "--SPMR",
-        "--shift",
-        "75",
-        "--extsize",
-        "150",
-    ]
+def macs2(frag_file, name, outdir, format="BEDPE", p_cutoff=None):
+    """
+    This function runs the MACS2 peak calling algorithm.
+
+    Parameters
+    ----------
+    frag_file : str or List[str]
+        The path(s) to the fragment file(s).
+    name : str
+        The name for the output files.
+    outdir : str
+        The output directory.
+    format : str, optional
+        The format of the fragment file(s). Default is "BEDPE".
+    p_cutoff : float, optional
+        The p-value cutoff for peak calling. Default is None. When set as None, it will use qvalue instead.
+        In general, use p_cutoff=0.01 for training seq2PRINT model. Use qvalue instead for short-listed peaks
+        to calculate seqattrs.
+
+    Returns
+    -------
+    None
+    """
+
+    if type(frag_file) is not list:
+        frag_file = [frag_file]
+
+    # assert genome is not None, "genome must be provided"
+    commands = (
+        ["macs2", "callpeak", "--nomodel", "-t"]
+        + frag_file
+        + [
+            "--outdir",
+            outdir,
+            "-n",
+            name,
+            "-f",
+            format,
+            "--nolambda",
+            "--keep-dup",
+            "all",
+            "--call-summits",
+            "--nomodel",
+            "-B",
+            "--SPMR",
+            "--shift",
+            "75",
+            "--extsize",
+            "150",
+        ]
+    )
+    # commands = [
+    #     "macs2",
+    #     "callpeak",
+    #     "-t"] + frag_file + [
+    #     "--outdir",
+    #     outdir,
+    #     "-n",
+    #     name,
+    #     "-f",
+    #     format,
+    #     "--nolambda",
+    #     "--keep-dup",
+    #     "all",
+    #     "--call-summits"
+    # ]
+    if p_cutoff is not None:
+        commands.extend(["-p", str(p_cutoff)])
     subprocess.run(commands)

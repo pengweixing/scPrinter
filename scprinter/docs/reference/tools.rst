@@ -26,3 +26,11 @@ Binding Score Calculation
    :toctree: _autosummary
 
    tl.get_binding_score
+
+Insertion profile
+~~~~~~~~~~~~~~~~~~
+
+.. autosummary::
+   :toctree: _autosummary
+
+   tl.get_insertions

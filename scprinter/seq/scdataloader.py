@@ -21,7 +21,9 @@ def fetch_cov(summit, group2idx):
     signal = global_insertion_dict[chrom][:, start:end].sum(axis=-1)
     coverages = np.zeros((len(group2idx),))
     for j in range(len(group2idx)):
-        coverages[j] = signal[group2idx[j]].sum()
+        # print(j, group2idx[j], group2idx[j].dtype, type(signal))
+        coverages[j] = signal[group2idx[j].astype("int")].sum()
+
     return coverages
 
 
@@ -127,6 +129,7 @@ class scChromBPDataset(torch.utils.data.Dataset):
                     chunksize=100,
                     desc="fetching coverages",
                 )
+                # coverages = np.array([func(r) for r in regions])
                 self.coverages = np.array(coverages).reshape((-1))
             else:
                 self.coverages = coverages
@@ -141,8 +144,14 @@ class scChromBPDataset(torch.utils.data.Dataset):
                 self.coverages.max(),
             )
             self.normalized_coverages = self.coverages.reshape((-1, len(self.group2idx)))
+            print(
+                self.normalized_coverages.shape,
+                self.normalized_coverages.min(),
+                self.normalized_coverages.max(),
+            )
             self.normalized_coverages = np.log1p(
-                self.normalized_coverages / self.normalized_coverages.mean(axis=1)[:, None]
+                self.normalized_coverages
+                / (self.normalized_coverages.mean(axis=1)[:, None] + 1e-16)
             )
             print(
                 "normalized coverages",

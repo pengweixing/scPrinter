@@ -17,10 +17,21 @@ Fragment file processing
 
     pp.import_fragments
 
-Synced visualization processing
+
+Cell x Peak matrix preprocessing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autosummary::
+    :toctree: _autosummary
+
+    pp.make_peak_matrix
+    pp.make_gene_matrix
+    pp.mean_norm_counts
+
+Export pseudobulk bigwigs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autosummary::
     :toctree: _autosummary
 
-    pp.sync_footprints
+    pp.export_bigwigs

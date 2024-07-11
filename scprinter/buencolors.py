@@ -1059,14 +1059,21 @@ def jdb_palette(name, n=None, palette_type="discrete"):
     """
     Generate a color palette for seaborn and matplotlib.
 
-    Parameters:
-        name (str): Name of the palette.
-        n (int): Number of colors desired.
-        palette_type (str): Either 'discrete' or 'continuous'.
+    Parameters
+    ----------
+    name : str
+        Name of the palette.
+    n : int
+        Number of colors desired.
+    palette_type : str
+        Either 'discrete' or 'continuous'.
 
-    Returns:
-        list or LinearSegmentedColormap: The generated color palette.
+    Returns
+    -------
+    list or LinearSegmentedColormap
+        The generated color palette.
     """
+
     if name not in jdb_palettes:
         raise ValueError("Palette not found.")
 
@@ -1084,11 +1091,3 @@ def jdb_palette(name, n=None, palette_type="discrete"):
         return [cmap(i) for i in np.linspace(0, 1, n)]
     else:
         raise ValueError("palette_type must be either 'discrete' or 'continuous'")
-
-
-# Example usage:
-# discrete_palette = jdb_palette("GrandBudapest", 4, 'discrete')
-# continuous_palette = jdb_palette("GrandBudapest", 10, 'continuous')
-
-# For seaborn, directly use the generated list for discrete palettes.
-# For matplotlib, use LinearSegmentedColormap.from_list(name, continuous_palette) for continuous palettes.

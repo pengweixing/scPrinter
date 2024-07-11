@@ -20,5 +20,6 @@ Predefined motif databases
    :toctree: _autosummary
 
    motifs.JASPAR2022_core_Motifs
-   motifs.CisBPHuman_Motifs
-   motifs.CisBP_JASPAR_Motifs
+   motifs.CisBP_Human_Motifs
+   motifs.FigR_Human_Motifs
+   motifs.FigR_Mouse_Motifs

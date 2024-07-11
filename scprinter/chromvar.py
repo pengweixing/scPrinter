@@ -1,5 +1,5 @@
 import logging
-from typing import Union
+from typing import Literal, Union
 
 import anndata
 import numpy as np
@@ -11,56 +11,52 @@ from pynndescent import NNDescent
 from scipy.sparse import csr_matrix as scipy_csr_matrix
 from tqdm.auto import tqdm, trange
 
-from ..utils import regionparser
+from scprinter.utils import GC_content, get_peak_bias, regionparser
 
 
-def GC_content(dna_string):
-    a, c, g, t = 0, 0, 0, 0
-    # Iterate over each character in the string and increment the corresponding count
-    for nucleotide in dna_string:
-        if nucleotide == "G":
-            g += 1
-        elif nucleotide == "C":
-            c += 1
-        elif nucleotide == "A":
-            a += 1
-        elif nucleotide == "T":
-            t += 1
+def sample_bg_peaks(
+    adata,
+    genome,
+    method: Literal["nndescent", "chromvar"] = "nndescent",
+    bg_set=None,
+    niterations=50,
+    w=0.1,
+    bs=50,
+    n_jobs=1,
+):
+    """
+    This function samples background peaks for chromVAR analysis in single-cell ATAC-seq data.
 
-    return a, c, g, t
+    Parameters
+    ----------
+    adata : AnnData
+        AnnData object containing single-cell ATAC-seq data.
+    genome : str or scp.genome.Genome
+        scp.genome.Genome object or string specifying the genome.
+    method : str, optional
+        Method to use for sampling background peaks. Can be either "nndescent" or "chromvar".
+        Defaults to "nndescent".
+    bg_set : array-like, optional
+        Custom background peak set to use. The background peaks would only be selected from
+        this set of peaks, instead of all peaks present in the dataset. Only applicable when
+        method is "nndescent". Defaults to None.
+    niterations : int, optional
+        Number of nearest neighbors to sample for each peak. Defaults to 50.
+    w : float, optional
+        Width parameter for Gaussian kernel density estimation. Defaults to 0.1. Only used in
+        "chromvar" mode.
+    bs : int, optional
+        Bin size for creating bins and sampling background peaks. Defaults to 50. Only used in
+        "chromvar" mode.
+    n_jobs : int, optional
+        Number of jobs to run in parallel for nearest neighbor calculation. Defaults to 1.
 
-
-def get_bias(adata, genome):
-    if type(adata) is not anndata.AnnData:
-        peaks = regionparser(adata)
-    else:
-        peaks = regionparser(list(adata.var_names))
-    gc_contents = []
-    overall_freq = [0, 0, 0, 0]
-    for chrom, start, end in tqdm(peaks.iloc[:, 0:3].values, desc="Fetching GC content"):
-        seq = genome.fetch_seq(chrom, start, end).upper()
-        a, c, g, t = GC_content(seq)
-        overall_freq[0] += a
-        overall_freq[1] += c
-        overall_freq[2] += g
-        overall_freq[3] += t
-        if a + c + g + t == 0:
-            gc_contents.append(0.5)
-        else:
-            gc_contents.append((g + c) / (a + c + g + t))
-    gc_contents = np.asarray(gc_contents)
-    gc_contents[np.isnan(gc_contents)] = 0.5
-    overall_freq = np.array(overall_freq)
-    overall_freq = overall_freq / np.sum(overall_freq)
-    if type(adata) is not anndata.AnnData:
-        return gc_contents, overall_freq
-
-    adata.var["gc_content"] = gc_contents
-    adata.uns["bg_freq"] = overall_freq
-    return None
-
-
-def sample_bg_peaks(adata, method="nndescent", bg_set=None, niterations=50, w=0.1, bs=50, n_jobs=1):
+    Returns
+    -------
+    array-like
+        Array containing indices of sampled background peaks for each peak.
+    """
+    get_peak_bias(adata, genome)
     assert method in ["nndescent", "chromvar"], "Method not supported"
     reads_per_peak = adata.X.sum(axis=0)
     assert np.min(reads_per_peak) > 0, "Some peaks have no reads"
@@ -78,10 +74,11 @@ def sample_bg_peaks(adata, method="nndescent", bg_set=None, niterations=50, w=0.
         index = NNDescent(
             trans_norm_mat[bg_set if bg_set is not None else slice(None)],
             metric="euclidean",
-            n_neighbors=niterations,
+            n_neighbors=niterations + 1,
             n_jobs=n_jobs,
         )
-        knn_idx, _ = index.query(trans_norm_mat, niterations)
+        knn_idx, _ = index.query(trans_norm_mat, niterations + 1)
+        knn_idx = knn_idx[:, 1:]
         if bg_set is not None:
             knn_idx = bg_set[knn_idx.reshape((-1))].reshape((-1, niterations))
         adata.varm["bg_peaks"] = knn_idx
@@ -95,6 +92,19 @@ def sample_bg_peaks(adata, method="nndescent", bg_set=None, niterations=50, w=0.
 
 
 def create_bins_and_sample_background(trans_norm_mat, bs, w, niterations):
+    """
+    Translated from the chromVAR R package.
+    Parameters
+    ----------
+    trans_norm_mat
+    bs
+    w
+    niterations
+
+    Returns
+    -------
+
+    """
     # Create bins
     bins1 = np.linspace(np.min(trans_norm_mat[:, 0]), np.max(trans_norm_mat[:, 0]), bs)
     bins2 = np.linspace(np.min(trans_norm_mat[:, 1]), np.max(trans_norm_mat[:, 1]), bs)
@@ -109,8 +119,10 @@ def create_bins_and_sample_background(trans_norm_mat, bs, w, niterations):
     bin_p = scipy.stats.norm.pdf(bin_dist, 0, w)
     # Find nearest bin membership for each point in trans_norm_mat
     print("NNDescent", bin_data.shape)
-    index = NNDescent(bin_data, metric="euclidean", n_neighbors=1, n_jobs=-1)
+    index = NNDescent(bin_data, metric="euclidean", n_neighbors=1, n_jobs=1)
     indices, _ = index.query(trans_norm_mat, 1)
+    # distance = scipy.spatial.distance.cdist(trans_norm_mat, bin_data)
+    # indices = np.argmin(distance, axis=1)
     bin_membership = indices.flatten()
     # Calculate bin density
     unique, counts = np.unique(bin_membership, return_counts=True)
@@ -145,6 +157,16 @@ def bg_sample_helper(bin_membership, bin_p, bin_density, niterations):
 
 
 def scipy_to_cupy_sparse(sparse_matrix):
+    """
+    A function that converts a SciPy sparse matrix to a CuPy sparse matrix. Only supports CSR matrices now.
+    Parameters
+    ----------
+    sparse_matrix
+
+    Returns
+    -------
+
+    """
     import cupy as cp
     from cupyx.scipy.sparse import csr_matrix as cupy_csr_matrix
 
@@ -167,7 +189,27 @@ def scipy_to_cupy_sparse(sparse_matrix):
     return cupy_sparse_matrix
 
 
-def compute_deviations_gpu(adata, chunk_size: int = 10000, device="cuda"):
+def compute_deviations(adata, chunk_size: int = 10000, device="cuda"):
+    """
+    Computes the deviation of motif matches from the background for each cell.
+
+    Parameters
+    ----------
+    adata : AnnData
+        The input AnnData object containing the count matrix, background peaks, and motif match information.
+    chunk_size : int, optional
+        The size of chunks to process the data in. Default is 10000. It is recommended to set this
+        such that there's no GPU memory overflow. Although our implementation would tolerate that,
+        it will be much slower if there's overflow.
+    device : str, optional
+        The device to use for computation. Can be either "cuda" for GPU or "cpu" for CPU. Default is "cuda".
+
+    Returns
+    -------
+    dev : AnnData
+        The AnnData object containing the deviation values for each cell and motif match.
+    """
+
     assert (
         "bg_peaks" in adata.varm_keys()
     ), "Cannot find background peaks in the input object, please first run get_bg_peaks!"
@@ -199,7 +241,7 @@ def compute_deviations_gpu(adata, chunk_size: int = 10000, device="cuda"):
             X_chunk = scipy_to_cupy_sparse(X_chunk)
         else:
             X_chunk = backend.array(X_chunk)
-        res = _compute_deviations_gpu(
+        res = _compute_deviations(
             motif_match,
             X_chunk,
             expectation_obs_chunk,
@@ -211,7 +253,7 @@ def compute_deviations_gpu(adata, chunk_size: int = 10000, device="cuda"):
         for i in trange(n_bg_peaks, desc="Processing background peaks"):
             bg_peak_idx = backend.array(adata.varm["bg_peaks"][:, i]).flatten()
             bg_motif_match = motif_match[bg_peak_idx, :]
-            res = _compute_deviations_gpu(
+            res = _compute_deviations(
                 bg_motif_match,
                 X_chunk,
                 expectation_obs_chunk,
@@ -231,12 +273,11 @@ def compute_deviations_gpu(adata, chunk_size: int = 10000, device="cuda"):
     dev = AnnData(
         dev, dtype="float32", obs=adata.obs.copy()
     )  # Convert back to CPU for AnnData compatibility
-    # dev.obs_names = adata.obs_names
     dev.var_names = adata.uns["motif_name"]
     return dev
 
 
-def _compute_deviations_gpu(motif_match, count, expectation_obs, expectation_var, device):
+def _compute_deviations(motif_match, count, expectation_obs, expectation_var, device):
     if device == "cuda":
         import cupy as backend
     else:
@@ -250,7 +291,34 @@ def _compute_deviations_gpu(motif_match, count, expectation_obs, expectation_var
     return out
 
 
-def bagDeviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None, use_name=True):
+def bag_deviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None):
+    """
+    This function performs a bagging operation on transcription factors (TFs) based on their correlation with each other.
+    It selects a representative TF (sentinel TF) for each group of TFs that have a correlation coefficient greater than or equal to the specified threshold.
+
+    Parameters
+    ----------
+    adata : AnnData, optional
+        An AnnData object containing the count matrix and TF information. If provided, TF variability will be computed from this object.
+    ranked_df : DataFrame, optional
+        A DataFrame containing TF names and their variability scores. If provided, TF variability will be computed from this object.
+    cor : float, optional
+        The correlation coefficient threshold. TFs with a correlation coefficient greater than or equal to this threshold will be grouped together.
+    motif_corr_matrix : str, optional
+        The path to the motif correlation matrix file. The common options are `scp.datasets.FigR_motifs_bagging_mouse` and `scp.datasets.FigR_motifs_bagging_human`.
+    use_name : bool, optional
+        A flag indicating whether to use TF names from the correlation matrix file. If True, TF names will be extracted from the correlation matrix file.
+
+    Returns
+    -------
+    DataFrame
+        If an AnnData object is provided, a DataFrame containing the selected sentinel TFs and their corresponding TF groups.
+    list
+        If a DataFrame object is provided, a list containing the selected sentinel TFs.
+    list
+        If a DataFrame object is provided, a list containing the TF groups.
+    """
+
     assert motif_corr_matrix is not None, "Motif correlation matrix must be provided"
     assert 0.15 < cor < 1, "Correlation coefficient must be between 0.15 and 1"
     assert adata is not None or ranked_df is not None, "Either adata or ranking_df must be provided"
@@ -270,11 +338,12 @@ def bagDeviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None, u
     # Import correlation based on PWMs for the organism
     cormat = pd.read_csv(motif_corr_matrix, sep="\t")  # Assuming the RDS file contains one object
 
-    if use_name:
-        tf1 = [xx.split("_")[2] for xx in cormat["TF1"]]
-        tf2 = [xx.split("_")[2] for xx in cormat["TF2"]]
-        cormat["TF1"] = tf1
-        cormat["TF2"] = tf2
+    # Historical code, kept for future references
+    # if use_name:
+    #     tf1 = [xx.split("_")[2] for xx in cormat["TF1"]]
+    #     tf2 = [xx.split("_")[2] for xx in cormat["TF2"]]
+    #     cormat["TF1"] = tf1
+    #     cormat["TF2"] = tf2
 
     assert set(TFnames).issubset(
         set(cormat["TF1"]).union(set(cormat["TF2"]))

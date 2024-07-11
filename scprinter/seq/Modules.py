@@ -411,6 +411,54 @@ class DilatedCNN(nn.Module):
         return X
 
 
+class CoverageAdjustedFootprints_head(nn.Module):
+    def __init__(self, footprints_head, coverages):
+        super().__init__()
+        self.footprints_head = footprints_head
+        self.adjustment_footprint = nn.Sequential(
+            nn.Linear(in_features=1, out_features=1, bias=True),
+            nn.GELU(),  # sigmoid for non-linearity
+            nn.Linear(in_features=1, out_features=1, bias=True),
+        )
+        for n, p in self.adjustment_footprint.named_parameters():
+            if "weight" in n:
+                p.data = torch.zeros_like(
+                    p.data
+                )  # -1 * p.data if torch.sum(p.data) < 0 else p.data
+            elif "bias" in n:
+                p.data = torch.tensor([1.0])
+        self.adjustment_count = nn.Linear(in_features=1, out_features=1, bias=True)
+        self.adjustment_count.weight.data = torch.tensor([[0.0]])
+        self.adjustment_count.bias.data = torch.tensor([1.0])
+        self.coverages = coverages
+        self.adjust_foot = 1
+        self.adjust_count = 1
+
+    def forward(self, X, cells=None, *args, **kwargs):
+        if cells is not None:
+            adjustment_foot = self.adjustment_footprint(self.coverages(cells))[:, None]
+            adjustment_count = self.adjustment_count(self.coverages(cells))[:, 0]
+        else:
+            adjustment_foot = self.adjust_foot
+            adjustment_count = self.adjust_count
+        X_bindingscore, X_count = self.footprints_head(X, cells, *args, **kwargs)
+        X_bindingscore = X_bindingscore * adjustment_foot
+        X_count = X_count * adjustment_count
+
+        return X_bindingscore, X_count
+
+    def collapse_layer(self, cell):
+
+        self.adjust_foot = self.adjustment_footprint(
+            self.coverages(torch.tensor([cell]).long().to(self.adjustment_count.weight.data.device))
+        )[:, 0].mean(axis=0)
+        self.adjust_count = self.adjustment_count(
+            self.coverages(torch.tensor([cell]).long().to(self.adjustment_count.weight.data.device))
+        )[:, 0].mean(axis=0)
+
+        # print("collapsing", self.adjust_foot, self.adjust_count)
+
+
 class Footprints_head(nn.Module):
     # This is the output head of the footprints model
     def __init__(self, n_filters, kernel_size=5, n_scales=50, per_peak_feats=1):
@@ -473,6 +521,7 @@ class Footprints_head(nn.Module):
                     if self.training
                     else X.mean(dim=-1, keepdims=True)
                 ),
+                *args,
                 **kwargs,
             )[..., 0, 0]
 
@@ -575,7 +624,8 @@ class Conv1dLoRA(nn.Module):
         with torch.no_grad():
             self.A_embedding.eval()
             self.A_embedding.cuda()
-            A_output = self.A_embedding(torch.arange(64).long().cuda())
+            test_cell_num = min(100, self.A_embedding[0].weight.shape[0])
+            A_output = self.A_embedding(torch.arange(test_cell_num).long().cuda())
             mean, std = A_output.mean(), A_output.std()
             print("A_output mean: {}, std: {}".format(mean, std))
             # self.scale *= 1 / (std * r)
@@ -586,11 +636,14 @@ class Conv1dLoRA(nn.Module):
     def collapse_layer(self, cell):
         # return a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at cell
 
-        if type(cell) is not int:
+        if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
             raise ValueError("cell must be an integer")
+        if type(cell) == int:
+            cell = [cell]
+        cell = torch.tensor(cell).long().to(self.A_embedding[0].weight.data.device)
 
-        A = self.A_embedding(torch.tensor([cell]).long().to(self.A_embedding[0].weight.data.device))
-        B = self.B_embedding(torch.tensor([cell]).long().to(self.A_embedding[0].weight.data.device))
+        A = self.A_embedding(cell).mean(dim=0)
+        B = self.B_embedding(cell).mean(dim=0)
         if self.kernel_size == 1:
             A = A.reshape((self.r, self.layer_dim_in))
             B = B.reshape((self.layer_dim_out, self.r))
@@ -633,7 +686,8 @@ class Conv1dLoRA(nn.Module):
             A = self.A_embedding(cells).reshape((bs, int(self.layer_dim_in / self.groups), self.r))
             B = self.B_embedding(cells).reshape((bs, self.r, self.layer_dim_out, self.kernel_size))
             if modes is not None:
-                B = B[:, modes]
+                print("we actually use modes", modes)
+                B = B[:, :, modes]
             B = B.reshape((bs, self.r, self.layer_dim_out * self.kernel_size))
             weight = (
                 torch.bmm(A, B)
@@ -665,6 +719,445 @@ class Conv1dLoRA(nn.Module):
             # within each group, the convolution projects from (layer_dim_in, seq_len) to (layer_dim_out, seq_len)
             # This is equivalent to a for loop over each sample in the batch
             lora_x = lora_x.view(bs, self.layer_dim_out, -1)
+            X = lora_x * self.scale + self.layer(X, modes=modes)
+
+            # # route 2
+            # weight = weight + self.layer.conv.weight[modes][None]
+            # weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
+            # X = F.conv1d(X.reshape((1, -1, X.shape[-1])), weight=weight,
+            #                 bias=None, dilation=self.dilation,
+            #                 groups=bs * self.groups, padding=self.padding)
+            # X = X.view(bs, self.layer_dim_out, -1)
+            # X = X + self.layer.conv.bias[modes][None, :, None]
+
+            return X
+
+
+class Conv1dLoRAv2(nn.Module):
+    def __init__(
+        self,
+        layer,
+        A_embedding=None,
+        B_embedding=None,
+        r=8,
+        alpha=None,
+        hidden_dim=None,
+        n_layers=0,
+    ):
+        super().__init__()
+        assert isinstance(layer, Conv1dWrapper), "The layer must be a Conv1dWrapper layer"
+        self.layer = layer
+        self.pretrain_conv = layer.conv
+        self.layer_dim_in = self.pretrain_conv.in_channels
+        self.layer_dim_out = self.pretrain_conv.out_channels
+        self.kernel_size = self.pretrain_conv.kernel_size[0]
+        self.dilation = self.pretrain_conv.dilation[0]
+        self.padding = self.pretrain_conv.padding[0]
+        self.groups = self.pretrain_conv.groups
+
+        self.A_embedding_dim = A_embedding.embedding_dim
+        self.B_embedding_dim = B_embedding.embedding_dim
+
+        if alpha is None:
+            alpha = r
+
+        self.scale = alpha / r
+        self.r = r
+
+        if hidden_dim is None:
+            self.hidden_dim = self.A_embedding_dim
+        else:
+            self.hidden_dim = hidden_dim
+
+        layers = (
+            [
+                A_embedding,
+                nn.Linear(in_features=self.A_embedding_dim, out_features=self.hidden_dim),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.GELU(),
+            ]
+            + [
+                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.GELU(),
+            ]
+            * n_layers
+            + [
+                nn.Linear(
+                    in_features=self.hidden_dim,
+                    out_features=int(
+                        self.layer_dim_in * r
+                    ),  # lead to a weight matrix of shape (r, layer_dim_in)
+                ),
+            ]
+        )
+        self.A_embedding = nn.Sequential(*layers)
+
+        layers = (
+            [
+                B_embedding,
+                nn.Linear(in_features=self.B_embedding_dim, out_features=self.hidden_dim),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.GELU(),
+            ]
+            + [
+                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.GELU(),
+            ]
+            * n_layers
+            + [
+                nn.Linear(
+                    in_features=self.hidden_dim,
+                    out_features=int(
+                        self.layer_dim_out * r * self.kernel_size / self.groups
+                    ),  # lead to a weight matrix of shape (layer_dim_out, r)
+                ),
+            ]
+        )
+        self.B_embedding = nn.Sequential(*layers)
+
+        # When combined, this will lead to a weight matrix of shape (layer_dim_out, layer_dim_in, kernel_size)
+
+        ## Make sure B starts as all zeros:
+        for i in range(len(self.B_embedding)):
+            if isinstance(self.B_embedding[i], nn.Linear):
+                self.B_embedding[i].bias.data[...] = 0
+                self.B_embedding[i].weight.data[...] = 0
+
+        # test A_output distribution
+        with torch.no_grad():
+            self.A_embedding.eval()
+            self.A_embedding.cuda()
+            test_cell_num = min(100, self.A_embedding[0].weight.shape[0])
+            A_output = self.A_embedding(torch.arange(test_cell_num).long().cuda())
+            mean, std = A_output.mean(), A_output.std()
+            print("A_output mean: {}, std: {}".format(mean, std))
+            # self.scale *= 1 / (std * r)
+            rescale_factor = 1 / (std)
+            self.A_embedding[0].weight.data[...] *= rescale_factor  # rescale the embedding matrix
+
+    @torch.no_grad()
+    def collapse_layer(self, cell):
+        # return a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at cell
+
+        if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
+            raise ValueError("cell must be an integer")
+        if type(cell) == int:
+            cell = [cell]
+        cell = torch.tensor(cell).long().to(self.A_embedding[0].weight.data.device)
+
+        A = self.A_embedding(cell).mean(dim=0)
+        B = self.B_embedding(cell).mean(dim=0)
+        if self.kernel_size == 1:
+            A = A.reshape((self.r, self.layer_dim_in))
+            B = B.reshape((self.layer_dim_out, self.r))
+            weight = torch.matmul(B, A)[..., None]
+        else:
+            A = A.reshape((int(self.layer_dim_in), self.r))
+            B = B.reshape((self.r, int(self.layer_dim_out / self.groups) * self.kernel_size))
+            weight = (
+                torch.matmul(A, B)
+                .reshape(
+                    (
+                        int(self.layer_dim_in / self.groups),
+                        self.layer_dim_out,
+                        self.kernel_size,
+                    )
+                )
+                .contiguous()
+                .permute(1, 0, 2)
+            )
+        weight_scaled = weight * self.scale
+        new_layer = copy.deepcopy(self.layer)
+        new_layer.conv.weight.data[...] = new_layer.conv.weight.data + weight_scaled
+        return new_layer
+
+    def forward(self, X, cells, modes=None):
+        if self.kernel_size == 1:
+            # When kernel_size == 1, the convolution is actually a linear layer, take a short path
+            A = self.A_embedding(cells).reshape((-1, self.r, self.layer_dim_in))
+            B = self.B_embedding(cells).reshape((-1, self.layer_dim_out, self.r))
+            # x: (batch_size, layer_dim_in, seq_len)
+            lora_x = torch.bmm(A, X)  # (batch_size, r, seq_len)
+            if modes is not None:
+                B = B[:, modes]
+            lora_x = torch.bmm(B, lora_x)  # (batch_size, layer_dim_out, seq_len
+            return lora_x * self.scale + (self.layer(X, modes=modes))
+        else:
+            # When kernel_size > 1, the convolution can be written as groupped convolutioni,
+            # take a long path
+            bs = X.shape[0]  # batch_size
+            A = self.A_embedding(cells).reshape((bs, int(self.layer_dim_in), self.r))
+            B = self.B_embedding(cells).reshape(
+                (bs, self.r, int(self.layer_dim_out / self.groups), self.kernel_size)
+            )
+            if modes is not None:
+                B = B[:, modes]
+            B = B.reshape((bs, self.r, int(self.layer_dim_out / self.groups) * self.kernel_size))
+            weight = (
+                torch.bmm(A, B)
+                .reshape(
+                    (
+                        bs,
+                        int(self.layer_dim_in / self.groups),
+                        self.layer_dim_out,
+                        self.kernel_size,
+                    )
+                )
+                .contiguous()
+                .permute(0, 2, 1, 3)
+            )
+            # print (torch.sum(weight), weight.shape)
+            # size of (batch_size, layer_dim_out, layer_dim_in / groups, kernel_size)
+            # route 1
+            weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
+            # size of (batch_size * layer_dim_out, layer_dim_in / groups, kernel_size)
+            # X after reshape (1, batch_size*layer_dim_in, seq_len)
+            lora_x = F.conv1d(
+                X.reshape((1, -1, X.shape[-1])),
+                weight=weight,
+                bias=None,
+                dilation=self.dilation,
+                groups=bs * self.groups,
+                padding=self.padding,
+            )  # each batch_size is a group
+            # within each group, the convolution projects from (layer_dim_in, seq_len) to (layer_dim_out, seq_len)
+            # This is equivalent to a for loop over each sample in the batch
+            lora_x = lora_x.view(bs, self.layer_dim_out, -1)
+            # print (torch.sum(lora_x), lora_x.shape)
+            X = lora_x * self.scale + self.layer(X, modes=modes)
+
+            # # route 2
+            # weight = weight + self.layer.conv.weight[modes][None]
+            # weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
+            # X = F.conv1d(X.reshape((1, -1, X.shape[-1])), weight=weight,
+            #                 bias=None, dilation=self.dilation,
+            #                 groups=bs * self.groups, padding=self.padding)
+            # X = X.view(bs, self.layer_dim_out, -1)
+            # X = X + self.layer.conv.bias[modes][None, :, None]
+
+            return X
+
+
+class Conv1dLoRAv3(nn.Module):
+    def __init__(
+        self,
+        layer,
+        A_embedding=None,
+        B_embedding=None,
+        r=8,
+        alpha=None,
+        hidden_dim=None,
+        n_layers=0,
+    ):
+        super().__init__()
+        assert isinstance(layer, Conv1dWrapper), "The layer must be a Conv1dWrapper layer"
+        self.layer = layer
+        self.pretrain_conv = layer.conv
+        self.layer_dim_in = self.pretrain_conv.in_channels
+        self.layer_dim_out = self.pretrain_conv.out_channels
+        self.kernel_size = self.pretrain_conv.kernel_size[0]
+        self.dilation = self.pretrain_conv.dilation[0]
+        self.padding = self.pretrain_conv.padding[0]
+        self.groups = self.pretrain_conv.groups
+
+        self.A_embedding_dim = A_embedding.embedding_dim
+        self.B_embedding_dim = B_embedding.embedding_dim
+
+        if alpha is None:
+            alpha = r
+
+        self.scale = alpha / r
+        self.r = r
+
+        if hidden_dim is None:
+            self.hidden_dim = self.A_embedding_dim
+        else:
+            self.hidden_dim = hidden_dim
+
+        layers = (
+            [
+                A_embedding,
+                nn.Linear(in_features=self.A_embedding_dim, out_features=self.hidden_dim),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.GELU(),
+            ]
+            + [
+                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.GELU(),
+            ]
+            * n_layers
+            + [
+                nn.Linear(
+                    in_features=self.hidden_dim,
+                    out_features=int(
+                        # self.layer_dim_in * r
+                        r
+                    ),  # lead to a weight matrix of shape (r, layer_dim_in)
+                ),
+            ]
+        )
+
+        self.A_embedding = nn.Sequential(*layers)
+        self.A_vocab = nn.Parameter(
+            torch.normal(0, 1, (1, r, self.layer_dim_in)).to(self.A_embedding[0].weight.data.device)
+        )
+        layers = (
+            [
+                B_embedding,
+                nn.Linear(in_features=self.B_embedding_dim, out_features=self.hidden_dim),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.GELU(),
+            ]
+            + [
+                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
+                nn.BatchNorm1d(self.hidden_dim),
+                nn.GELU(),
+            ]
+            * n_layers
+            + [
+                nn.Linear(
+                    in_features=self.hidden_dim,
+                    out_features=int(
+                        r
+                        # self.layer_dim_out * r * self.kernel_size / self.groups
+                    ),  # lead to a weight matrix of shape (layer_dim_out, r)
+                ),
+            ]
+        )
+        self.B_embedding = nn.Sequential(*layers)
+        self.B_vocab = nn.Parameter(
+            torch.zeros((1, r, int(self.layer_dim_out * self.kernel_size / self.groups))).to(
+                self.A_embedding[0].weight.data.device
+            )
+        )
+        # print (self.A_vocab, self.B_vocab)
+        # When combined, this will lead to a weight matrix of shape (layer_dim_out, layer_dim_in, kernel_size)
+
+        ## Make sure B starts as all zeros:
+        for i in range(len(self.B_embedding)):
+            if isinstance(self.B_embedding[i], nn.Linear):
+                self.B_embedding[i].bias.data[...] = 0
+                self.B_embedding[i].weight.data[...] = 0
+
+        # test A_output distribution
+        with torch.no_grad():
+            self.A_embedding.eval()
+            self.A_embedding.cuda()
+            # self.A_vocab = self.A_vocab.cuda()
+            test_cell_num = min(100, self.A_embedding[0].weight.shape[0])
+            A_output = self.A_embedding(torch.arange(test_cell_num).long().cuda())
+            A_output = A_output[..., None] * self.A_vocab.cuda()  # bs, r, layer_dim_in
+            mean, std = A_output.mean(), A_output.std()
+            print("A_output mean: {}, std: {}".format(mean, std))
+            # self.scale *= 1 / (std * r)
+            rescale_factor = 1 / (std)
+            # self.A_vocab.data[...] *= rescale_factor.to(self.A_vocab.data.device)  # rescale the embedding matrix
+            self.A_embedding[0].weight.data[...] *= rescale_factor  # rescale the embedding matrix
+
+    @torch.no_grad()
+    def collapse_layer(self, cell):
+        # return a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at cell
+
+        if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
+            raise ValueError("cell must be an integer")
+        if type(cell) == int:
+            cell = [cell]
+        cell = torch.tensor(cell).long().to(self.A_embedding[0].weight.data.device)
+
+        A = self.A_embedding(cell).mean(dim=0)
+        B = self.B_embedding(cell).mean(dim=0)
+        if self.kernel_size == 1:
+            A = A.reshape((self.r, self.layer_dim_in))
+            B = B.reshape((self.layer_dim_out, self.r))
+            weight = torch.matmul(B, A)[..., None]
+        else:
+            A = A.reshape((int(self.layer_dim_in), self.r))
+            B = B.reshape((self.r, int(self.layer_dim_out / self.groups) * self.kernel_size))
+            weight = (
+                torch.matmul(A, B)
+                .reshape(
+                    (
+                        int(self.layer_dim_in / self.groups),
+                        self.layer_dim_out,
+                        self.kernel_size,
+                    )
+                )
+                .contiguous()
+                .permute(1, 0, 2)
+            )
+        weight_scaled = weight * self.scale
+        new_layer = copy.deepcopy(self.layer)
+        new_layer.conv.weight.data[...] = new_layer.conv.weight.data + weight_scaled
+        return new_layer
+
+    def forward(self, X, cells, modes=None):
+        if self.kernel_size == 1:
+            # When kernel_size == 1, the convolution is actually a linear layer, take a short path
+            A = self.A_embedding(cells)[..., None] * self.A_vocab  # shape of (bs, r, layer_dim_in)
+            B = (
+                self.B_embedding(cells)[..., None] * self.B_vocab
+            )  # shape of (bs, r, int(self.layer_dim_out * self.kernel_size / self.groups))
+            B = B.transpose(
+                -1, -2
+            )  # shape of (bs, int(self.layer_dim_out * self.kernel_size / self.groups), r)
+            # x: (batch_size, layer_dim_in, seq_len)
+            lora_x = torch.bmm(A, X)  # (batch_size, r, seq_len)
+            if modes is not None:
+                B = B[:, modes]
+            lora_x = torch.bmm(B, lora_x)  # (batch_size, layer_dim_out, seq_len
+            return lora_x * self.scale + (self.layer(X, modes=modes))
+        else:
+            # When kernel_size > 1, the convolution can be written as groupped convolutioni,
+            # take a long path
+            bs = X.shape[0]  # batch_size
+
+            A = (self.A_embedding(cells)[..., None] * self.A_vocab).transpose(
+                -1, -2
+            )  # shape of (bs,  layer_dim_in, r)
+            B = (
+                self.B_embedding(cells)[..., None] * self.B_vocab
+            )  # shape of (bs, r, int(self.layer_dim_out * self.kernel_size / self.groups))
+
+            if modes is not None:
+                raise ValueError("modes not supported for kernel_size > 1")
+                B = B[:, modes]
+
+            weight = (
+                torch.bmm(
+                    A, B
+                )  # (bs, layer_dim_in, int(self.layer_dim_out * self.kernel_size / self.groups))
+                .reshape(
+                    (
+                        bs,
+                        int(self.layer_dim_in / self.groups),
+                        self.layer_dim_out,
+                        self.kernel_size,
+                    )
+                )
+                .contiguous()
+                .permute(0, 2, 1, 3)
+            )
+            # print (torch.sum(weight), weight.shape)
+            # size of (batch_size, layer_dim_out, layer_dim_in / groups, kernel_size)
+            # route 1
+            weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
+            # size of (batch_size * layer_dim_out, layer_dim_in / groups, kernel_size)
+            # X after reshape (1, batch_size*layer_dim_in, seq_len)
+            lora_x = F.conv1d(
+                X.reshape((1, -1, X.shape[-1])),
+                weight=weight,
+                bias=None,
+                dilation=self.dilation,
+                groups=bs * self.groups,
+                padding=self.padding,
+            )  # each batch_size is a group
+            # within each group, the convolution projects from (layer_dim_in, seq_len) to (layer_dim_out, seq_len)
+            # This is equivalent to a for loop over each sample in the batch
+            lora_x = lora_x.view(bs, self.layer_dim_out, -1)
+            # print (torch.sum(lora_x), lora_x.shape)
             X = lora_x * self.scale + self.layer(X, modes=modes)
 
             # # route 2

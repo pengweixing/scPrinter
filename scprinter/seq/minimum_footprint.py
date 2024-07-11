@@ -310,7 +310,8 @@ class dispModel(nn.Module):
         zs = p
         mask = torch.isinf(zs)
         zs[mask] = float("nan")
-        zs.clamp_(clip_min, clip_max)
+        if clip_min is not None and clip_max is not None:
+            zs.clamp_(clip_min, clip_max)
         zs = zs[..., 100:-100]
         return zs.float()
 

@@ -57,6 +57,10 @@ def datasets():
                 "JASPAR2022_core_nonredundant.jaspar": "md5:af268b3e9589f52440007b43cba358f8",
                 "CisBP_Human.jaspar": "md5:23b85a4cd8299416dd5d85516c0cdcbf",
                 "CisBPJASPA.jaspar": "md5:7f965084f748d9e91f950a7981ffd7d5",
+                "CisBP_Mouse_FigR": "md5:f00120636a859a3de49aad1b5e6a8c1c",
+                "CisBP_Human_FigR": "md5:333c0c141cc08f5e0bdf23f9eb335db7",
+                "CisBP_Mouse_FigR_Bagging": "md5:766de57df1fbdbf7e718d2c79a166d61",
+                "CisBP_Human_FigR_Bagging": "md5:8b2760490915d782c12dc1e1bda99783",
                 # bias file
                 # "hg38Tn5Bias.h5": "md5:5ff8b43c50eb23639e3d93b5b1e8a50a",
                 "ce11Tn5Bias.tar.gz": "md5:10d8d17f94f695c06c0f66968f67b55b",
@@ -91,6 +95,10 @@ def datasets():
                 "JASPAR2022_core_nonredundant.jaspar": "https://drive.google.com/uc?export=download&id=1YmRZ3sABLJvv9uj40BY97Rdqyodd852P",
                 "CisBP_Human.jaspar": "https://drive.google.com/uc?export=download&id=1IVcg27kxzG5TtnjqFrheGxXa-0kfAOW7",
                 "CisBPJASPA.jaspar": "https://drive.google.com/uc?export=download&id=1I62z-JZaQOnue7iimU0Q8Uf7ZjpEHLGn",
+                "CisBP_Mouse_FigR": "https://github.com/ruochiz/FigRmotifs/raw/main/mouse_pfms_v4.txt",
+                "CisBP_Human_FigR": "https://github.com/ruochiz/FigRmotifs/raw/main/human_pfms_v4.txt",
+                "CisBP_Mouse_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/chromvar_mouse_2021_cisBP_correlationMatrix.bed",
+                "CisBP_Human_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/chromvar_human_2021_cisBP_correlationMatrix.bed",
                 # bias file
                 # "hg38Tn5Bias.h5": "https://drive.google.com/uc?export=download&confirm=s5vl&id=1Ias_dP2docuXRGcoQrGHMNOlIwhgJZoJ",
                 "ce11Tn5Bias.tar.gz": "https://zenodo.org/record/7121027/files/ce11Tn5Bias.tar.gz",
@@ -179,6 +187,40 @@ def dispersion_model():
     return str(datasets().fetch("dispersion_model_py.h5", processor=giverightstothegroup))
 
 
+def FigR_motifs(species="mouse"):
+    """
+    A wrapper function to get FigR motifs for mouse or human
+    You can also get it by `scprinter.datasets.FigR_motifs_mouse` or `scprinter.datasets.FigR_motifs_human
+
+    Returns
+    -------
+    str: path to the FigR motifs
+    """
+    if species == "mouse":
+        return str(datasets().fetch("CisBP_Mouse_FigR", processor=giverightstothegroup))
+    elif species == "human":
+        return str(datasets().fetch("CisBP_Human_FigR", processor=giverightstothegroup))
+    else:
+        raise ValueError("species should be either 'mouse' or 'human'")
+
+
+def FigR_motifs_bagging(species="mouse"):
+    """
+    A wrapper function to get FigR motifs bagging for mouse or human
+    You can also get it by `scprinter.datasets.FigR_motifs_bagging_mouse` or `scprinter.datasets.FigR_motifs_bagging_human
+
+    Returns
+    -------
+    str: path to the FigR motifs bagging
+    """
+    if species == "mouse":
+        return str(datasets().fetch("CisBP_Mouse_FigR_Bagging", processor=giverightstothegroup))
+    elif species == "human":
+        return str(datasets().fetch("CisBP_Human_FigR_Bagging", processor=giverightstothegroup))
+    else:
+        raise ValueError("species should be either 'mouse' or 'human'")
+
+
 def BMMCTutorial():
     """
     A wrapper function to get BMMC Tutorial data.
@@ -208,4 +250,13 @@ pretrained_TFBS_model_classI = datasets().fetch(
 pretrained_NucBS_model = datasets().fetch("nucleosome_model_py.pt", processor=giverightstothegroup)
 pretrained_dispersion_model = datasets().fetch(
     "dispersion_model_py.h5", processor=giverightstothegroup
+)
+
+FigR_motifs_mouse = datasets().fetch("CisBP_Mouse_FigR", processor=giverightstothegroup)
+FigR_motifs_human = datasets().fetch("CisBP_Human_FigR", processor=giverightstothegroup)
+FigR_motifs_bagging_mouse = datasets().fetch(
+    "CisBP_Mouse_FigR_Bagging", processor=giverightstothegroup
+)
+FigR_motifs_bagging_human = datasets().fetch(
+    "CisBP_Human_FigR_Bagging", processor=giverightstothegroup
 )

@@ -13,4 +13,7 @@ This page gives an overview of scprinter API.
    plotting
    motifs
    datasets
+   peak
+   chromvar
+   buencolors
    utils

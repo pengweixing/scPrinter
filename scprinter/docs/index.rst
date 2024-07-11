@@ -8,12 +8,11 @@ Main advantages:
  - More flexible (generate footprints for any region / cell groupings)
  - More portable (No need to share fragments, share the printer object (10x smaller))
  - Real time synced visualization of footprinting results.
+ - Generalizable to low-cov bulk ATAC & scATAC-seq
 
 Coming functions:
  - Differential testing
- - Better TFBS prediction
- - More visualization function
- - Generalizable to low-cov bulk ATAC & scATAC-seq
+
 
 
 .. video:: _static/beta.mp4
@@ -22,7 +21,7 @@ Coming functions:
     :width: 960
 
 Beta testing on fasrc!
-----------
+----------------------
 **Why Fasrc?**
 
 That way the lab can share one environment and we can all use the same version of the software.

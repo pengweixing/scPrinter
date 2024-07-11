@@ -1,7 +1,10 @@
+"""
+This file is not cleaned yet... but low priority now.
+"""
+
 from __future__ import annotations
 
 import math
-import time
 import warnings
 
 import numpy as np
@@ -9,16 +12,16 @@ import pandas as pd
 import plotly.graph_objs as go
 import pyBigWig
 import torch
-from dna_features_viewer import GraphicFeature, GraphicRecord
+from dna_features_viewer import GraphicFeature
 from dna_features_viewer.compute_features_levels import compute_features_levels
 from plotly.subplots import make_subplots
 from scanpy.plotting.palettes import default_20, default_28, default_102
 
 from . import motifs
-from .getFootprint import fastMultiScaleFootprints
-from .getTFBS import fastRegionBindingScore
-from .io import PyPrinter
+from .footprint import _bigwig_footprint
+from .io import scPrinter
 from .plotting_seq import plot_a_for_plotly, plot_c_for_plotly, plot_g_for_plotly, plot_t_for_plotly
+from .TFBS import _bigwig_bindingscore
 from .utils import regionparser
 
 default_colors = {0: "green", 1: "blue", 2: "orange", 3: "red"}
@@ -27,7 +30,7 @@ default_colors = {0: "green", 1: "blue", 2: "orange", 3: "red"}
 def _create_motif_match_df(motif, chrom, s, e):
     # motif_matchs = motif.scan_motif([[chrom, int(s), int(e), "+"]],
     #                                 clean=False, strand=True)
-    motif_matchs = motif.scan_once(chrom, int(s), int(e), clean=True, strand=True)
+    motif_matchs = motif.scan_motif([[chrom, int(s), int(e)]], clean=True, strand=True)
     if len(motif_matchs) == 0:
         return None
 
@@ -322,7 +325,7 @@ def fetch_importance_values(printer, importance, chrom, start, end):
 
 
 def sync_footprints(
-    printer: PyPrinter,
+    printer: scPrinter,
     group_names: str | list[str],
     init_region: str,
     motif_scanner: motifs.Motifs | None = None,
@@ -339,7 +342,7 @@ def sync_footprints(
 
     Parameters
     ----------
-    printer: PyPrinter
+    printer: scPrinter
         The printer object.
     group_names: str | list[str]
         group_names, these must be included in the `group_bigwig` in `adata.uns['group_bigwig']`
@@ -367,16 +370,13 @@ def sync_footprints(
         tfs = []
     else:
         tfs = list(motif_scanner.tfs)
-    # Set global dispersion model for footprinting
-    global dispModels
-    dispModels = printer.dispersionModel
-
+    printer.set_global_var(shared=True)
     # get the initial plot region
     init_region = regionparser(init_region, printer)
     chrom, init_s, init_e = (
         init_region["Chromosome"][0],
-        int(init_region["Start"]),
-        int(init_region["End"]),
+        int(init_region["Start"].iloc[0]),
+        int(init_region["End"].iloc[0]),
     )
 
     # prep group_names & seq importance to make them both as list
@@ -643,61 +643,8 @@ def sync_footprints(
     return fig
 
 
-def _bigwig_bindingscore(insertion, bias, model_key, chrom, s, e, pad=0, extra=None):
-    b = np.array(bias.values(chrom, s - pad, e + pad))
-    b[np.isnan(b)] = 0.0
-
-    a = np.array(insertion.values(chrom, s - pad, e + pad))
-    a[np.isnan(a)] = 0.0
-
-    v = fastRegionBindingScore(
-        a[None], b, dispModels, bindingScoreModels[model_key], contextRadius=100
-    )[0]
-    # print (v.shape, pad, a.shape)
-    # print (nan1, nan2)
-    # if pad > 0:
-    #     v = v[pad:-pad]
-    if extra is not None:
-        return v, extra
-    return v
-
-
-def set_global_var(printer):
-    global dispModels, bindingScoreModels
-    dispModels = printer.dispersionModel
-    bindingScoreModels = printer.bindingScoreModel
-
-
-def _bigwig_footprint(
-    insertion, bias, chrom, s, e, pad=0, extra=None, return_pval=True, smoothRadius=5
-):
-    # insertion = pyBigWig.open(insertion, 'r')
-    # bias = pyBigWig.open(bias, 'r')
-    b = np.array(bias.values(chrom, s - pad, e + pad))
-    nan1 = np.sum(np.isnan(b))
-    b[np.isnan(b)] = 0.0
-
-    a = np.array(insertion.values(chrom, s - pad, e + pad))
-    a[np.isnan(a)] = 0.0
-    nan2 = np.sum(np.isnan(a))
-    v = fastMultiScaleFootprints(
-        a[None],
-        b,
-        dispModels,
-        modes=np.arange(2, 101),
-        smoothRadius=smoothRadius,
-        return_pval=return_pval,
-    )[0]
-    # print (nan1, nan2)
-    if pad > 0:
-        v = v[:, pad:-pad]
-    if extra is not None:
-        return v, extra
-    return v
-
-
-def sync_footprints_advanced(
-    printer: PyPrinter,
+def sync_footprints_v2(
+    printer: scPrinter,
     init_region: str,
     contents: list,
     width: int = 600,
@@ -705,25 +652,28 @@ def sync_footprints_advanced(
     vmax: float = 2.0,
 ):
     """
-    Synced visualization of multiscale footprints
-    You must run `tl.sync_footprints` first with the same `group_names` to generate the
-    `group_bigwig` in `adata.uns['group_bigwig']`
+    Synced visualization of multiscale footprints. You must run `tl.sync_footprints` first with the same `group_names` to generate the
+    `group_bigwig` in `adata.uns['group_bigwig']`.
 
     Parameters
     ----------
-    printer: PyPrinter
+    printer : scPrinter
         The printer object.
-    init_region: str
-        The initial region to plot, e.g. 'chr1:1000-2000'
-    contents: list
-        The list of contents to plot, each element is a tuple of (type, name, arguments)
-        type can be: footprint, signal, sequence, gene, motif, bindingscore, seq2signal, insertion,
-    width: int
-        The width of the plot. Default: 600
+    init_region : str
+        The initial region to plot, e.g. 'chr1:1000-2000'.
+    contents : list
+        The list of contents to plot, each element is a tuple of (type, name, arguments).
+        The type can be: footprint, signal, sequence, gene, motif, bindingscore, seq2signal, insertion.
+    width : int, optional
+        The width of the plot. Default is 600.
+    vmin : float, optional
+        The minimum value for the colormap scaling. Default is 0.5.
+    vmax : float, optional
+        The maximum value for the colormap scaling. Default is 2.0.
 
     Returns
     -------
-
+    None
     """
 
     # group_names: str | list[str],
@@ -734,16 +684,14 @@ def sync_footprints_advanced(
     # get info for plot tss gene
 
     # Set global dispersion model for footprinting
-    global dispModels, bindingScoreModels
-    dispModels = printer.dispersionModel
-    bindingScoreModels = printer.bindingScoreModel
+    printer.set_global_var(shared=True)
 
     # get the initial plot region
     init_region = regionparser(init_region, printer)
     chrom, init_s, init_e = (
         init_region["Chromosome"][0],
-        int(init_region["Start"]),
-        int(init_region["End"]),
+        int(init_region["Start"].iloc[0]),
+        int(init_region["End"].iloc[0]),
     )
 
     assert (

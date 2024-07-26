@@ -336,6 +336,7 @@ def clean_macs2(
     use_quantile_scores=False,
     final_peak_width=None,
     max_iter=1000,
+    preset: Literal["seq2PRINT", "chromvar", None] = None,
 ):
     """
     This function reads in MACS2 summit files, filters overlapping peaks,
@@ -365,12 +366,25 @@ def clean_macs2(
         The width of the final peaks. Default is None.
     max_iter : int, optional
         The maximum number of iterations for peak clearing. Default is 1000.
+    preset : Literal['seq2PRINT', 'chromvar', None], optional
+        This would overwrite most of the parameters above. Default is None.
 
     Returns
     -------
     cleaned_peaks : pd.DataFrame
         A DataFrame containing the cleaned peaks in Bed format.
     """
+    if preset == "seq2PRINT":
+        peak_width = 128
+        blacklist_peak_width = 1000
+        filter_chr = False
+        n = 300000
+        fdr_threshold = 0.01
+        final_peak_width = 1000
+    elif preset == "chromvar":
+        peak_width = 800
+        blacklist_peak_width = 800
+        final_peak_width = 300
 
     if type(name) is not list:
         name = [name]

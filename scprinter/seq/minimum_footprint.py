@@ -7,63 +7,24 @@ But it should be accurate enough to train a neural network
 import torch
 import torch.nn as nn
 
-
-def footprintWindowSum(
-    x,  # A numerical or integer vector x
-    footprintRadius,  # Radius of the footprint region
-    flankRadius,  # Radius of the flanking region (not including the footprint region)
-):
-    halfFlankRadius = int(flankRadius / 2)
-    width = x.shape[-1]
-
-    # Calculate sum of x in the left flanking window
-    shift = halfFlankRadius + footprintRadius
-    # x can be shape of (x) or (sample, x)
-    shapes = list(x.shape)
-    shapes[-1] = shift
-    leftShifted = torch.cat([torch.zeros(shapes, device=x.device), x], dim=-1)
-
-    leftFlankSum = rz_conv_torch(leftShifted, halfFlankRadius)[..., :width]
-
-    # Calculate sum of x in the right flanking window
-    rightShifted = torch.cat(
-        [
-            x,
-            torch.zeros(shapes, device=x.device),
-        ],
-        dim=-1,
-    )
-    rightFlankSum = rz_conv_torch(rightShifted, halfFlankRadius)[..., shift:]
-
-    centerSum = rz_conv_torch(x, footprintRadius)
-    return leftFlankSum, centerSum, rightFlankSum
-
-
-# Doing the same thing as conv in R, but more generalizable and in torch
-def rz_conv_torch(a, n=2):
-    if n == 0:
-        return a
-    shapes = a.shape
-    if len(shapes) == 1:
-        a = a[None, None, :]
-    else:
-        a = a.reshape((-1, 1, shapes[-1]))
-
-    a = torch.nn.functional.conv1d(
-        a,
-        torch.ones((1, 1, n * 2), device=a.device, dtype=a.dtype),
-        torch.zeros((1), device=a.device, dtype=a.dtype),
-        padding=n,
-    )[..., 0, 1:]
-
-    if len(shapes) == 1:
-        a = a[0]
-    else:
-        a = a.reshape(shapes)
-    return a
+try:
+    from scprinter.utils import rz_conv_torch
+except ImportError:
+    from ..utils import rz_conv_torch
 
 
 def post_processing(xx, radius):
+    """
+    Post processing of the footprint, this replace the maximum_filter function in scipy.
+    Parameters
+    ----------
+    xx
+    radius
+
+    Returns
+    -------
+
+    """
     # mask1 = torch.isnan(xx)
     # xx[mask1] = -float('inf')
     xx = torch.nn.functional.max_pool1d(xx, 2 * radius, stride=1, padding=radius)[..., 1:]
@@ -72,26 +33,17 @@ def post_processing(xx, radius):
     return xx
 
 
-class RobustScale(nn.Module):
-    def __init__(self, weight, bias):
-        super().__init__()
-        self.model = nn.Linear(weight.shape[1], weight.shape[0])
-        self.model.weight.data = weight
-        self.model.bias.data = bias
-
-    def forward(self, x):
-        # mask1 = torch.isnan(x)
-        # mask2 = torch.isinf(x)
-        # sign = torch.sign(x)
-        # x[mask1] = 0
-        # x[mask2] = 0
-        x = self.model(x)
-        # x[mask1] = np.nan
-        # x[mask2] = np.inf * sign[mask2]
-        return x
-
-
 class dispModel(nn.Module):
+    """
+    A torch module that wraps the dispersion model in the old format into a torch module
+    such that it would takes the atac and bias and directly do the footprints
+
+    Parameters
+    ----------
+    dispmodels:
+        The pretrained dispersion models loaded in scPrinter.
+    """
+
     def __init__(self, dispmodels=None):
         super().__init__()
         if dispmodels is not None:
@@ -99,7 +51,6 @@ class dispModel(nn.Module):
 
     def initialize(self, dispmodels):
         self.models = []
-        # self.scales2 = []
 
         self.scale1_weight_all = []
         self.scale1_bias_all = []
@@ -112,18 +63,27 @@ class dispModel(nn.Module):
 
         for i in range(2, 101, 1):
             key = str(i)
-            scale1 = RobustScale(
-                torch.diag(1 / torch.from_numpy(dispmodels[key]["featureSD"])).float(),
+            # The standard way of normalization is to have the feature minus the mean divided by the standard deviation
+            # The nn.Linear would do the feature transformation by the formula y = x * weight + bias
+            # So the equivalent transformation is to have y = x * (1/std) + (-mean/std) = (x - mean) / std
+            # divided by the standard deviation, and then minus the mean / deviation
+            weight = torch.diag(1 / torch.from_numpy(dispmodels[key]["featureSD"])).float()
+            bias = (
                 -torch.from_numpy(dispmodels[key]["featureMean"]).float()
-                / torch.from_numpy(dispmodels[key]["featureSD"]).float(),
+                / torch.from_numpy(dispmodels[key]["featureSD"]).float()
             )
-            # print (scale1.weight.data, scale1.bias.data)
+            scale1 = nn.Linear(weight.shape[1], weight.shape[0])
+            scale1.weight.data = weight
+            scale1.bias.data = bias
 
-            scale2 = RobustScale(
-                torch.diag(torch.from_numpy(dispmodels[key]["targetSD"])).float(),
-                torch.from_numpy(dispmodels[key]["targetMean"]).float(),
-            )
+            # The target normalization is to have the target multiply by the standard deviation and then add the mean
+            weight = torch.diag(torch.from_numpy(dispmodels[key]["targetSD"])).float()
+            bias = torch.from_numpy(dispmodels[key]["targetMean"]).float()
+            scale2 = nn.Linear(weight.shape[1], weight.shape[0])
+            scale2.weight.data = weight
+            scale2.bias.data = bias
 
+            # Now tansform the linear layer in the dispersion model into a torch module
             linear1 = nn.Linear(
                 dispmodels[key]["modelWeights"][0].shape[1],
                 dispmodels[key]["modelWeights"][0].shape[0],
@@ -138,18 +98,21 @@ class dispModel(nn.Module):
             linear2.weight.data = dispmodels[key]["modelWeights"][2].float()
             linear2.bias.data = dispmodels[key]["modelWeights"][3].float()
 
-            self.scale1_weight_all.append(scale1.model.weight.data.T)
-            self.scale1_bias_all.append(scale1.model.bias.data[None])
+            self.scale1_weight_all.append(scale1.weight.data.T)
+            self.scale1_bias_all.append(scale1.bias.data[None])
             self.linear1_weight_all.append(linear1.weight.data.T)
             self.linear1_bias_all.append(linear1.bias.data[None])
             self.linear2_weight_all.append(linear2.weight.data.T)
             self.linear2_bias_all.append(linear2.bias.data[None])
-            self.scale2_weight_all.append(scale2.model.weight.data.T)
-            self.scale2_bias_all.append(scale2.model.bias.data[None])
+            self.scale2_weight_all.append(scale2.weight.data.T)
+            self.scale2_bias_all.append(scale2.bias.data[None])
 
             self.models.append(nn.Sequential(scale1, linear1, nn.ReLU(), linear2, scale2))
         self.models = nn.ModuleList(self.models)
 
+        # The weights and bias are also stacked here for the usage in the footprint function
+        # The advantages are that this way one can specify the scales to be used in the footprint function
+        # And the computation would still happen in parallel, not in a for loop for modes
         self.scale1_weight_all = nn.Parameter(torch.stack(self.scale1_weight_all, dim=0))
         self.scale1_bias_all = nn.Parameter(torch.stack(self.scale1_bias_all, dim=0))
         self.linear1_weight_all = nn.Parameter(torch.stack(self.linear1_weight_all, dim=0))
@@ -159,9 +122,13 @@ class dispModel(nn.Module):
         self.scale2_weight_all = nn.Parameter(torch.stack(self.scale2_weight_all, dim=0))
         self.scale2_bias_all = nn.Parameter(torch.stack(self.scale2_bias_all, dim=0))
 
+        # pretrained, no need to be optimized
         for param in self.parameters():
             param.requires_grad = False
 
+        # The smooth kernels are used for the windowsum
+        # smooth_kernels are the ones for left and right window sum
+        # smooth_kernels_center are the ones for the center window sum
         self.smooth_kernels = torch.zeros((99, 1, 100)).float()
         for i in range(99):
             size = int((i + 2) / 2)
@@ -187,13 +154,15 @@ class dispModel(nn.Module):
         smooth_kernels = self.smooth_kernels[modes - 2]
         smooth_kernels_center = self.smooth_kernels_center[modes - 2]
 
+        # This replaces the rz_conv_torch
         a = torch.nn.functional.conv1d(
             x,
             smooth_kernels,
             torch.zeros((len(modes)), device=x.device, dtype=x.dtype),
             padding=200,
         )[..., 1:]
-        # Now we need to slice the tensor
+
+        # Now we need to slice the tensor to get the left and right window sum
         l = []
         r = []
         for i, mode in enumerate(modes):
@@ -207,25 +176,48 @@ class dispModel(nn.Module):
         l = torch.stack(l, dim=-2)
         r = torch.stack(r, dim=-2)
 
+        # This replaces the rz_conv_torch to get the center window sum
         c = torch.nn.functional.conv1d(
             x,
             smooth_kernels_center,
             torch.zeros((len(modes)), device=x.device, dtype=x.dtype),
             padding=100,
         )[..., :, 1:]
+
+        # If the input is a single insertion track, return without adding first dimension
         if len(shapes) == 1:
-            l = l[0]
-            c = c[0]
-            r = r[0]
+            l, c, r = l[0], c[0], r[0]
+
         else:
             shapes = shapes[:-1] + [len(modes), width]
-            l = l.reshape(shapes)
-            c = c.reshape(shapes)
-            r = r.reshape(shapes)
+            l, c, r = l.reshape(shapes), c.reshape(shapes), r.reshape(shapes)
 
         return l, c, r
 
     def footprint(self, atac, bias, modes, clip_min=-10, clip_max=10):
+        """
+        The footprint function that takes the atac and bias and return the footprint scores
+
+        Parameters
+        ----------
+        atac: torch.Tensor
+            The atac insertion signal
+        bias: torch.Tensor
+            The bias signal. Has to be the same shape as atac
+        modes: torch.Tensor
+            The scales to be used in the footprint function
+        clip_min: float
+            The minimum value to be clipped
+        clip_max: float
+            The maximum value to be clipped
+
+        Returns
+        -------
+        zs: torch.Tensor
+            The footprint scores as z-scores
+
+        """
+        # Bias and atac go through the same window sum process, might as well stack them for simplicity
         bias_and_atac = torch.cat([bias, atac], dim=0)
         bulk_l, bulk_c, bulk_r = self.windowsum(bias_and_atac, modes)
         biasWindowSums_l_bulk, biasWindowSums_c_bulk, biasWindowSums_r_bulk = (
@@ -259,9 +251,11 @@ class dispModel(nn.Module):
             num_dims - 3,
             num_dims - 1,
         )
-        fgFeatures_bulk = fgFeatures_bulk.permute(*new_order)  # shapes of [...., length, scales, 5]
-        # Now do batch matmul
+        fgFeatures_bulk = fgFeatures_bulk.permute(
+            *new_order
+        )  # shapes of [...., length, scales, input]
 
+        # Now find all the corresponding scales and do batch matmul
         scale1_weights = self.scale1_weight_all[modes - 2]  # shape of [scales, input, output]
         scale1_bias = self.scale1_bias_all[modes - 2]  # shape of [scales, output]
         linear1_weights = self.linear1_weight_all[modes - 2]
@@ -271,17 +265,37 @@ class dispModel(nn.Module):
         scale2_weights = self.scale2_weight_all[modes - 2]
         scale2_bias = self.scale2_bias_all[modes - 2]
 
+        # This is batched multiplication, basically for matrix A,B of shape(...,n,m), (...,m,p) -> (...,n,p)
+        fgFeatures_bulk = fgFeatures_bulk[..., None, :]  # [..., length, scales, 1, input]
+        missing_dim = int(len(fgFeatures_bulk.shape) - len(scale1_weights.shape))
+        for _ in range(missing_dim):
+            scale1_weights = scale1_weights[None]  # [..., 1, scales, input, output]
+            linear1_weights = linear1_weights[None]
+            linear2_weights = linear2_weights[None]
+            scale2_weights = scale2_weights[None]
+
+        # output = (
+        #     torch.matmul(fgFeatures_bulk[..., None, :], scale1_weights[None, None]) + scale1_bias
+        # )
+        # output = torch.matmul(output, linear1_weights[None, None]) + linear1_bias
+        # output = torch.nn.functional.relu(output)
+        # output = torch.matmul(output, linear2_weights[None, None]) + linear2_bias
+        # output = (
+        #         torch.matmul(output, scale2_weights[None, None]) + scale2_bias
+        # )  # shape of [..., length, scales, 1, 4]
         output = (
-            torch.matmul(fgFeatures_bulk[..., None, :], scale1_weights[None, None]) + scale1_bias
-        )
-        output = torch.matmul(output, linear1_weights[None, None]) + linear1_bias
+            torch.matmul(fgFeatures_bulk, scale1_weights) + scale1_bias
+        )  # [..., length, scales, 1, output]
+        output = torch.matmul(output, linear1_weights) + linear1_bias
         output = torch.nn.functional.relu(output)
-        output = torch.matmul(output, linear2_weights[None, None]) + linear2_bias
+        output = torch.matmul(output, linear2_weights) + linear2_bias
         output = (
-            torch.matmul(output, scale2_weights[None, None]) + scale2_bias
+            torch.matmul(output, scale2_weights) + scale2_bias
         )  # shape of [..., length, scales, 1, 4]
-        # output = output.reshape(shapes[:-1] + [4]) # [..., scale, 4]
-        predDispersion = output[..., 0, :].permute(*new_order)  # [..., scales, length, 4]
+
+        predDispersion = output[..., 0, :].permute(
+            *new_order
+        )  # First to [..., length, scales, 4] then [..., scales, length, 4]
 
         leftPredRatioMean = predDispersion[..., 0]  # shape of [..., scales, length]
         leftPredRatioSD = predDispersion[..., 1]
@@ -312,88 +326,42 @@ class dispModel(nn.Module):
         zs[mask] = float("nan")
         if clip_min is not None and clip_max is not None:
             zs.clamp_(clip_min, clip_max)
-        zs = zs[..., 100:-100]
+        zs = zs[..., 100:-100]  # The first 100 and last 100 are not used as they are not stable
         return zs.float()
 
     def forward(self, x: torch.Tensor, i: int):
+        # The forward function is not used in the footprint function
         x = self.models[i - 2](x)
         return x
 
 
 @torch.no_grad()
-def multiscaleFoot_new(atac, bias, modes, dispmodel, clip_min=-10, clip_max=10):
+def multiscaleFoot(atac, bias, modes, dispmodel, clip_min=-10, clip_max=10):
+    """
+    The multiscaleFoot function that takes the atac and bias and return the footprint scores
+
+    Parameters
+    ----------
+    atac: torch.Tensor
+        The atac insertion signal
+    bias: torch.Tensor
+        The bias signal. Has to be the same shape as atac
+    modes: torch.Tensor
+        The scales to be used in the footprint function
+    dispmodel: torch.nn.Module
+        The trained dispersion model
+    clip_min: float
+        The minimum value to be clipped
+    clip_max: float
+        The maximum value to be clipped
+
+    Returns
+    -------
+    zs: torch.Tensor
+        The footprint scores as z-scores
+
+
+    """
     atac = atac.float()
     bias = bias.float()
     return dispmodel.footprint(atac, bias, modes, clip_min=clip_min, clip_max=clip_max)
-
-
-@torch.no_grad()
-def multiscaleFoot_old(atac, bias, modes, dispmodel, clip_min=-10, clip_max=10):
-
-    zs = []
-    atac = atac.float()
-    bias = bias.float()
-
-    for i, mode in enumerate(modes):
-        footprintRadius = mode
-        flankRadius = mode
-        # Get sum of predicted bias in left flanking, center, and right flanking windows
-        biasWindowSums_l, biasWindowSums_c, biasWindowSums_r = footprintWindowSum(
-            bias, footprintRadius, flankRadius
-        )
-
-        # Get sum of insertion counts in left flanking, center, and right flanking windows
-        insertionWindowSums_l, insertionWindowSums_c, insertionWindowSums_r = footprintWindowSum(
-            atac, footprintRadius, flankRadius
-        )
-
-        leftTotalInsertion = insertionWindowSums_c + insertionWindowSums_l
-        rightTotalInsertion = insertionWindowSums_c + insertionWindowSums_r
-        fgFeatures = torch.stack(
-            [
-                biasWindowSums_l,
-                biasWindowSums_r,
-                biasWindowSums_c,
-                torch.log10(leftTotalInsertion),
-                torch.log10(rightTotalInsertion),
-            ],
-            dim=-1,
-        )
-
-        predDispersion = dispmodel(fgFeatures, mode)
-
-        leftPredRatioMean = predDispersion[..., 0]
-        leftPredRatioSD = predDispersion[..., 1]
-        rightPredRatioMean = predDispersion[..., 2]
-        rightPredRatioSD = predDispersion[..., 3]
-
-        leftPredRatioSD[leftPredRatioSD < 0] = 0
-        rightPredRatioSD[rightPredRatioSD < 0] = 0
-
-        fgLeftRatio = insertionWindowSums_c / leftTotalInsertion
-        fgRightRatio = insertionWindowSums_c / rightTotalInsertion
-
-        leftZ = (fgLeftRatio - leftPredRatioMean) / leftPredRatioSD
-        rightZ = (fgRightRatio - rightPredRatioMean) / (rightPredRatioSD)
-
-        p = torch.maximum(leftZ, rightZ)
-
-        # Mask positions with zero coverage on either flanking side
-        p[
-            (leftTotalInsertion < 1)
-            | (rightTotalInsertion < 1)
-            | (leftPredRatioSD == 0)
-            | (rightPredRatioSD == 0)
-        ] = float("nan")
-        zs.append(p)
-
-    zs = torch.stack(zs, axis=1)
-    mask = torch.isinf(zs)
-    zs[mask] = float("nan")
-    zs.clamp_(clip_min, clip_max)
-    zs = zs[..., 100:-100]
-
-    return zs.float()
-
-
-multiscaleFoot = multiscaleFoot_new

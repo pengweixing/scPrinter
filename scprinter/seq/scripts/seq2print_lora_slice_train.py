@@ -1,19 +1,25 @@
+import argparse
 import gc
+import json
 import os.path
 import pickle
+import socket
+from pathlib import Path
 
 import pandas as pd
 import transformers
+import wandb
 from ema_pytorch import EMA
 
 import scprinter as scp
-from scprinter.backup.scdataloader import *
 from scprinter.seq.dataloader import *
 from scprinter.seq.Models import *
 from scprinter.utils import loadDispModel
 
+torch.backends.cudnn.benchmark = True
 
-def main(config=None, enable_wandb=True):
+
+def entry(config=None, enable_wandb=True):
     # Initialize a new wandb run
     with wandb.init(config=config):
         print("start a new run!!!")
@@ -40,8 +46,10 @@ def main(config=None, enable_wandb=True):
         insertion = os.path.join(data_dir, config["insertion"])
         grp2barcodes = os.path.join(data_dir, config["grp2barcodes"])
         grp2embeddings = os.path.join(data_dir, config["grp2embeddings"])
+        cells_of_interest = np.array(config["cells"])
+
         pretrain_model = os.path.join(data_dir, config["pretrain_model"])
-        # coverages = os.path.join(data_dir, config["coverages"])
+        # coverages = os.path.join(data_dir, config['coverages'])
 
         peaks = pd.read_table(peaks, sep="\t", header=None)
         summits = peaks
@@ -52,10 +60,8 @@ def main(config=None, enable_wandb=True):
         print(summits)
         modes = np.arange(2, 101, 1)
         insertion = pickle.load(open(insertion, "rb"))
-        grp2barcodes = np.array(pickle.load(open(grp2barcodes, "rb")), dtype="object")
-        grp2embeddings = np.array(pickle.load(open(grp2embeddings, "rb")))
-        print(grp2embeddings)
-        # grp2embeddings = StandardScaler().fit_transform(grp2embeddings.reshape((-1, 1))).reshape(grp2embeddings.shape)
+        grp2barcodes = np.array(pickle.load(open(grp2barcodes, "rb")))[cells_of_interest]
+        grp2embeddings = np.array(pickle.load(open(grp2embeddings, "rb")))[cells_of_interest]
 
         max_jitter = config["max_jitter"]
         ema_flag = config["ema"]
@@ -72,16 +78,13 @@ def main(config=None, enable_wandb=True):
             raise ValueError("genome not supported")
 
         lr = config["lr"]
-        acc_model = torch.load(pretrain_model)
-        acc_model.cuda()
-        for p in acc_model.parameters():
-            p.requires_grad = False
-        acc_model.profile_cnn_model.conv_layer.weight.requires_grad = True
-        acc_model.profile_cnn_model.conv_layer.bias.requires_grad = True
-        acc_model.profile_cnn_model.linear.weight.requires_grad = True
-        acc_model.profile_cnn_model.linear.bias.requires_grad = True
-        # acc_model, dna_len, output_len = construct_model_from_config(config)
-        acc_model.cuda()
+        method = config["method"]
+        if method == "lora":
+            acc_model = torch.load(pretrain_model)
+            for p in acc_model.parameters():
+                p.requires_grad = False
+        else:
+            raise ValueError("method not supported")
 
         total_params = sum(p.numel() for p in acc_model.parameters())
         print("total params - pretrained model", total_params)
@@ -90,15 +93,14 @@ def main(config=None, enable_wandb=True):
         print("dna len", acc_model.dna_len)
 
         # if os.path.exists(coverages):
-        #     cov = pickle.load(open(coverages, "rb"))
+        #     cov = pickle.load(open(coverages, 'rb'))
         #     save_coverage = False
         # else:
-        #     cov = {k: None for k in split}
-        #     save_coverage = True
-        save_coverage = False
         cov = {k: None for k in split}
+        save_coverage = False
+
         datasets = {
-            k: scChromBPDataset(
+            k: scseq2PRINTDataset(
                 insertion_dict=insertion,
                 bias=str(genome.fetch_bias())[:-3] + ".bw",
                 group2idx=grp2barcodes,
@@ -121,7 +123,7 @@ def main(config=None, enable_wandb=True):
 
         # if save_coverage:
         #     cov = {k: datasets[k].coverages for k in split}
-        #     pickle.dump(cov, open(coverages, "wb"))
+        #     pickle.dump(cov, open(coverages, 'wb'))
 
         dataloader = {
             k: seq2PRINTDataLoader(
@@ -143,93 +145,8 @@ def main(config=None, enable_wandb=True):
             for k in split
         }
 
-        val_loss, profile_pearson, across_pearson_fp, across_pearson_cov = (
-            validation_step_footprint(
-                acc_model,
-                dataloader["valid"],
-                (len(datasets["valid"].summits) // batch_size),
-                dispmodel,
-                modes,
-            )
-        )
-        print(
-            "before adjust output layer",
-            val_loss,
-            profile_pearson,
-            across_pearson_fp,
-            across_pearson_cov,
-        )
-        optimizer = torch.optim.AdamW(acc_model.parameters(), lr=1e-3, weight_decay=weight_decay)
-        if "scheduler" in config:
-            scheduler = config["scheduler"]
-        else:
-            scheduler = False
-        if scheduler:
-            scheduler = transformers.get_cosine_schedule_with_warmup(
-                optimizer, num_warmup_steps=3000, num_training_steps=100000
-            )
-        else:
-            scheduler = None
-
-        acc_model.cuda()
-        ema = None
-        if ema_flag:
-            update_after_step = 100
-            print("update after step", update_after_step)
-            ema = EMA(
-                acc_model,
-                beta=0.9999,  # exponential moving average factor
-                update_after_step=update_after_step,  # only after this number of .update() calls will it start updating
-                update_every=10,
-            )  # how often to actually update, to save on compute (updates every 10th .update() call)
-
-        acc_model.fit(
-            dispmodel,
-            dataloader["train"],
-            validation_data=dataloader["valid"],
-            validation_size=(len(datasets["valid"].summits) // batch_size),
-            max_epochs=3,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            validation_freq=(len(datasets["train"].summits) // batch_size),
-            early_stopping=(3 if "early_stopping" not in config else config["early_stopping"]),
-            return_best=True,
-            savename=f"{temp_dir}/{wandb.run.name}",
-            modes=modes,
-            downsample=None if "downsample" not in config else config["downsample"],
-            ema=ema,
-            use_amp=amp_flag,
-            use_wandb=enable_wandb,
-            batch_size=batch_size,
-        )
-
-        if ema:
-            del acc_model
-            acc_model = torch.load(f"{temp_dir}/{wandb.run.name}.ema_model.pt").cuda()
-
-        val_loss, profile_pearson, across_pearson_fp, across_pearson_cov = (
-            validation_step_footprint(
-                acc_model,
-                dataloader["valid"],
-                (len(datasets["valid"].summits) // batch_size),
-                dispmodel,
-                modes,
-            )
-        )
-
-        print(
-            "after adjusted output head",
-            val_loss,
-            profile_pearson,
-            across_pearson_fp,
-            across_pearson_cov,
-        )
-
-        for p in acc_model.parameters():
-            p.requires_grad = False
-
         acc_model = acc_model.cpu()
-        acc_model = seq2PRINT(
+        acc_model = scFootprintBPNet(
             dna_cnn_model=acc_model.dna_cnn_model,
             hidden_layer_model=acc_model.hidden_layer_model,
             profile_cnn_model=acc_model.profile_cnn_model,
@@ -245,7 +162,68 @@ def main(config=None, enable_wandb=True):
             lora_count_cnn=config["lora_count_cnn"],
             n_lora_layers=config["n_lora_layers"],
         )
-        acc_model = acc_model.cuda()
+
+        pretrain_lora_model = os.path.join(data_dir, config["pretrain_lora_model"])
+        pretrain_lora_model = torch.load(pretrain_lora_model)
+
+        acc_model.profile_cnn_model.conv_layer.layer.load_state_dict(
+            pretrain_lora_model.profile_cnn_model.conv_layer.layer.state_dict()
+        )
+        acc_model.profile_cnn_model.linear.layer.load_state_dict(
+            pretrain_lora_model.profile_cnn_model.linear.layer.state_dict()
+        )
+        #
+        # acc_model.profile_cnn_model.adjustment_footprint.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.adjustment_footprint.state_dict()
+        # )
+        # acc_model.profile_cnn_model.adjustment_count.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.adjustment_count.state_dict()
+        # )
+        #
+        # acc_model.profile_cnn_model.footprints_head.conv_layer.layer.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer.layer.state_dict()
+        # )
+        # acc_model.profile_cnn_model.footprints_head.linear.layer.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.footprints_head.linear.layer.state_dict()
+        # )
+
+        for flag, module, pretrain_module in [
+            (
+                config["lora_dna_cnn"],
+                [acc_model.dna_cnn_model.conv],
+                [pretrain_lora_model.dna_cnn_model.conv],
+            ),
+            (
+                config["lora_dilated_cnn"],
+                [l.module.conv1 for l in acc_model.hidden_layer_model.layers],
+                [l.module.conv1 for l in pretrain_lora_model.hidden_layer_model.layers],
+            ),
+            (
+                config["lora_pff_cnn"],
+                [l.module.conv2 for l in acc_model.hidden_layer_model.layers],
+                [l.module.conv2 for l in pretrain_lora_model.hidden_layer_model.layers],
+            ),
+            (
+                config["lora_output_cnn"],
+                [acc_model.profile_cnn_model.conv_layer],
+                [pretrain_lora_model.profile_cnn_model.conv_layer],
+            ),
+            (
+                config["lora_count_cnn"],
+                [acc_model.profile_cnn_model.linear],
+                [pretrain_lora_model.profile_cnn_model.linear],
+            ),
+        ]:
+            if flag:
+                for m, prem in zip(module, pretrain_module):
+                    for i in range(len(m.A_embedding)):
+                        if not isinstance(m.A_embedding[i], nn.Embedding):
+                            m.A_embedding[i].load_state_dict(prem.A_embedding[i].state_dict())
+                    for i in range(len(m.B_embedding)):
+                        if not isinstance(m.B_embedding[i], nn.Embedding):
+                            m.B_embedding[i].load_state_dict(prem.B_embedding[i].state_dict())
+
+        acc_model.cuda()
 
         print("model")
         print(acc_model)
@@ -288,7 +266,6 @@ def main(config=None, enable_wandb=True):
             )
         )
         print("before lora", val_loss, profile_pearson, across_pearson_fp, across_pearson_cov)
-        # raise EOFError
         acc_model.fit(
             dispmodel,
             dataloader["train"],
@@ -308,7 +285,6 @@ def main(config=None, enable_wandb=True):
             use_wandb=enable_wandb,
             accumulate_grad=config["accumulate_grad_batches"],
             batch_size=batch_size,
-            coverage_warming=5,
         )
         if ema:
             del acc_model
@@ -351,5 +327,51 @@ def main(config=None, enable_wandb=True):
         torch.cuda.empty_cache()
 
 
-if __name__ == "__main__":
-    main()
+def main():
+    parser = argparse.ArgumentParser(description="seq2PRINT LoRA model")
+    parser.add_argument("--config", type=str, default="config.JSON", help="config file")
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="/",
+        help="data directory, will be append to all data path in config",
+    )
+    parser.add_argument(
+        "--temp_dir",
+        type=str,
+        default="/",
+        help="temp directory, will be used to store working models",
+    )
+    parser.add_argument(
+        "--model_dir", type=str, default="/", help="will be used to store final models"
+    )
+    parser.add_argument("--enable_wandb", action="store_true", help="enable wandb")
+    parser.add_argument("--project", type=str, default="scPrinterSeq_v3_lora", help="project name")
+
+    torch.set_num_threads(4)
+    args = parser.parse_args()
+    config = json.load(open(args.config))
+
+    for path in [args.data_dir, args.temp_dir, args.model_dir]:
+        path = Path(path)
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+
+    config["data_dir"] = args.data_dir
+    config["temp_dir"] = args.temp_dir
+    config["model_dir"] = args.model_dir
+
+    if args.enable_wandb:
+        # start a new wandb run to track this script
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="scPrinterSeq_v3_lora",
+            notes=socket.gethostname() if "notes" not in config else config["notes"],
+            # track hyperparameters and run metadata
+            config=config,
+            job_type="training",
+            tags=config["tags"] if "tags" in config else [],
+            reinit=True,
+        )
+
+    entry(config, args.enable_wandb)

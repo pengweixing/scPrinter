@@ -1,15 +1,22 @@
 import copy
 
 import numpy as np
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from tqdm.auto import tqdm, trange
 
 from .Functions import *
 
 
 class Residual(nn.Module):
+    """
+    This is a simple residual connection
+    return x + module(x)
+
+    Parameters
+    ----------
+    module: nn.Module
+        the module to be wrapped
+    """
+
     def __init__(self, module):
         super().__init__()
         self.module = module
@@ -20,6 +27,16 @@ class Residual(nn.Module):
 
 # I assume the lr would be at 1e-3 scale, thus, the times 10 rescale the lr to 1e-2 scale
 class ReZero(nn.Module):
+    """
+    This is a residual connection with the rezero trick with a learnable weight
+
+    Parameters
+    ----------
+    module: nn.Module
+        the module to be wrapped
+
+    """
+
     def __init__(self, module):
         super().__init__()
         self.module = module
@@ -31,6 +48,16 @@ class ReZero(nn.Module):
 
 # Do nothing just pass,
 class Pass(nn.Module):
+    """
+    Just pass the input through the module. This is used as a placeholder class
+
+    Parameters
+    ----------
+    module: nn.Module
+        the module to be wrapped
+
+    """
+
     def __init__(self, module):
         super().__init__()
         self.module = module
@@ -40,6 +67,13 @@ class Pass(nn.Module):
 
 
 class Conv1dWrapper(nn.Module):
+    """
+    This is a wrapper for the Conv1d layer, it can be used to select a subset of the weights (modes for footprint).
+    All the parameters are passed directly to the Conv1d layer
+
+
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__()
         self.conv = nn.Conv1d(*args, **kwargs)
@@ -47,6 +81,23 @@ class Conv1dWrapper(nn.Module):
         self.bias = self.conv.bias
 
     def forward(self, X, *args, modes=None, **kwargs):
+        """
+
+        Parameters
+        ----------
+        X: torch.Tensor
+            shape=(batch_size, n_filters, seq_len)
+        args:
+            Just a placeholder
+        modes: torch.Tensor | None
+            The filters to be selected
+        kwargs:
+            Just a placeholder
+
+        Returns
+        -------
+
+        """
         # The args, and kwargs are just placeholders
         # Use modes to select a subset of the weights
         return (
@@ -56,7 +107,10 @@ class Conv1dWrapper(nn.Module):
                 X,
                 self.conv.weight[modes],
                 self.conv.bias[modes],
+                stride=self.conv.stride[0],
                 padding=self.conv.padding[0],
+                dilation=self.conv.dilation[0],
+                groups=self.conv.groups,
             )
         )
 
@@ -65,7 +119,7 @@ class DNA_CNN(nn.Module):
     """
     This is actually as simple as one CNN layer,
     It's used to extract the DNA sequence features (the first layer)
-    just to keep the consistency using the Module way of construction
+    just to make it easy to construct a seq2PRINT model
     """
 
     def __init__(self, n_filters=64, kernel_size=21, activation=nn.ReLU(), in_channels=4):
@@ -102,6 +156,33 @@ class DNA_CNN(nn.Module):
 
 
 class ConvBlockModule(nn.Module):
+    """
+    A Convolutional Block with grouped convolution followed by 1x1 convolution (PFF)
+
+    Parameters
+    ----------
+    n_filters: int
+        number of kernels
+    bottleneck: int
+        number of output kernels in the first layer
+    kernel_size: int
+        kernel size
+    dilation: int
+        dilation rate
+    activation: nn.Module
+        activation function
+    batch_norm: bool
+        batch normalization in between layers
+    batch_norm_momentum: float
+        batch normalization momentum
+    groups: int
+        number of groups in the conv layer
+    inception_version: int
+        2 or 3, 2 stands for 2 layers, 3 stands for 3 layers
+    empty: bool
+        if True, don't actually initialize the model, and one can do post-hoc initalization. This is only used to transform some old trained models to the latest format.
+    """
+
     def __init__(
         self,
         n_filters=64,
@@ -115,29 +196,6 @@ class ConvBlockModule(nn.Module):
         inception_version=2,
         empty=False,
     ):
-        """
-
-        Parameters
-        ----------
-        n_filters: int
-            number of kernels
-        bottleneck: int
-            number of kernels in the bottleneck layer
-        kernel_size: int
-            kernel size
-        dilation: int
-            dilation rate
-        activation: nn.Module
-            activation function
-        batch_norm: bool
-            batch normalization in between layers
-        batch_norm_momentum: float
-            batch normalization momentum
-        groups: int
-            number of groups in the conv layer
-        inception_version: int
-            2 or 3, 2 stands for 2 layers, 3 stands for 3 layers
-        """
 
         super().__init__()
         if empty:
@@ -153,6 +211,9 @@ class ConvBlockModule(nn.Module):
         self.bottleneck = bottleneck
 
         if inception_version == 2:
+            # Model contains
+            # grouped conv (n_filters, bottleneck, kernel_size) -> (batch norm) -> (bottleneck, n_filters, 1) -> (batch norm)
+
             self.conv1 = Conv1dWrapper(
                 in_channels=n_filters,
                 out_channels=bottleneck,
@@ -195,6 +256,11 @@ class ConvBlockModule(nn.Module):
             self.block2[0].bias.data[...] = 0
             self.block3 = None
         else:
+            # Model contains
+            # grouped conv (n_filters, bottleneck, 1) -> (batch norm) ->
+            # (bottleneck, bottleneck, 3) -> (batch norm) ->
+            # (bottleneck, n_filters, 1) -> (batch norm)
+
             self.conv1 = Conv1dWrapper(
                 in_channels=n_filters,
                 out_channels=bottleneck,
@@ -292,6 +358,25 @@ class ConvBlockModule(nn.Module):
 
 
 class DilatedConvModule(nn.Module):
+    """
+    Good old dilated conv network
+
+    Parameters
+    ----------
+    n_filters: int
+        number of filters
+    kernel_size: int
+        kernel size
+    activation: nn.Module
+        activation function
+    batch_norm: bool
+        batch normalization
+    batch_norm_momentum: float
+        batch normalization momentum
+    dilation: int
+        dilation rate
+    """
+
     def __init__(
         self,
         n_filters=64,
@@ -328,7 +413,36 @@ class DilatedConvModule(nn.Module):
 
 class DilatedCNN(nn.Module):
     """
-    This part only takes into account the Dilated CNN stack
+    A stack of conv blocks (the middle part of the seq2PRINT model)
+
+    Parameters
+    ----------
+    n_filters: int
+        number of filters
+    bottleneck: int
+        number of output kernels in the first layer
+    n_layers: int
+        number of layers
+    kernel_size: int
+        kernel size
+    groups: int
+        number of groups in the conv layer
+    activation: nn.Module
+        activation function
+    batch_norm: bool
+        batch normalization
+    batch_norm_momentum: float
+        batch normalization momentum
+    rezero: bool
+        use rezero trick
+    residual: bool
+        use residual connection
+    inception: bool
+        use inception module or the good old dilated conv
+    inception_version: int
+        2 or 3, 2 stands for 2 layers, 3 stands for 3 layers, passed to ConvBlockModule
+    dilation_func: function
+        a function to generate dilation rates, deciding sth like whether it's 1,2,4,8,16,32 or 2,4,8,16,32,64
     """
 
     def __init__(
@@ -411,23 +525,37 @@ class DilatedCNN(nn.Module):
         return X
 
 
-class CoverageAdjustedFootprints_head(nn.Module):
+class BiasAdjustedFootprintsHead(nn.Module):
+    """
+    This is the output head of the footprints model with a bias (such as sequencing depths) adjustment
+
+    Parameters
+    ----------
+    footprints_head: nn.Module
+        the footprints head
+    coverages: nn.Module
+        A embedding module to fetch the coverages
+
+    """
+
     def __init__(self, footprints_head, coverages):
         super().__init__()
         self.footprints_head = footprints_head
         self.adjustment_footprint = nn.Sequential(
-            nn.Linear(in_features=1, out_features=1, bias=True),
-            nn.GELU(),  # sigmoid for non-linearity
-            nn.Linear(in_features=1, out_features=1, bias=True),
+            nn.Linear(in_features=coverages.weight.data.shape[-1], out_features=32, bias=True),
+            nn.GELU(),  # For non-linearity
+            nn.Linear(in_features=32, out_features=1, bias=True),
         )
+        # Initialize as all 0s
         for n, p in self.adjustment_footprint.named_parameters():
-            if "weight" in n:
-                p.data = torch.zeros_like(
-                    p.data
-                )  # -1 * p.data if torch.sum(p.data) < 0 else p.data
-            elif "bias" in n:
-                p.data = torch.tensor([1.0])
-        self.adjustment_count = nn.Linear(in_features=1, out_features=1, bias=True)
+            p.data = torch.zeros_like(p.data)  # -1 * p.data if torch.sum(p.data) < 0 else p.data
+        # Only last layer bias should be 1
+        self.adjustment_footprint[-1].bias.data = torch.tensor([1.0])
+
+        # Assuming linear adjustment for counts
+        self.adjustment_count = nn.Linear(
+            in_features=coverages.weight.data.shape[-1], out_features=1, bias=True
+        )
         self.adjustment_count.weight.data = torch.tensor([[0.0]])
         self.adjustment_count.bias.data = torch.tensor([1.0])
         self.coverages = coverages
@@ -435,9 +563,29 @@ class CoverageAdjustedFootprints_head(nn.Module):
         self.adjust_count = 1
 
     def forward(self, X, cells=None, *args, **kwargs):
+        """
+
+        Parameters
+        ----------
+        X: torch.tensor, shape=(batch_size, n_filters, seq_len)
+        cells: torch.tensor | None
+            the cell indices, if None, use the global adjustment (which is no adjustment)
+        args:
+            pass to the footprints_head
+        kwargs
+            pass to the footprints_head
+
+        Returns
+        -------
+
+        """
         if cells is not None:
-            adjustment_foot = self.adjustment_footprint(self.coverages(cells))[:, None]
-            adjustment_count = self.adjustment_count(self.coverages(cells))[:, 0]
+            adjustment_foot = self.adjustment_footprint(self.coverages(cells))[
+                :, None
+            ]  # because footprint has shape of (..., bp, scales)
+            adjustment_count = self.adjustment_count(self.coverages(cells))[
+                :, 0
+            ]  # because count has shape of (bs, )
         else:
             adjustment_foot = self.adjust_foot
             adjustment_count = self.adjust_count
@@ -448,56 +596,87 @@ class CoverageAdjustedFootprints_head(nn.Module):
         return X_bindingscore, X_count
 
     def collapse_layer(self, cell):
+        """
+        Collapse the adjustment to single values. This is used such that the LoRA model or a giant model for all cells would be collapsed to a single model for a specific cell or the average for a set of cells.
 
-        self.adjust_foot = self.adjustment_footprint(
-            self.coverages(torch.tensor([cell]).long().to(self.adjustment_count.weight.data.device))
-        )[:, 0].mean(axis=0)
-        self.adjust_count = self.adjustment_count(
-            self.coverages(torch.tensor([cell]).long().to(self.adjustment_count.weight.data.device))
-        )[:, 0].mean(axis=0)
+        Parameters
+        ----------
+        cell
+
+        Returns
+        -------
+
+        """
+
+        if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
+            raise ValueError("cell must be an integer")
+        if type(cell) == int:
+            cell = [cell]
+        cell = torch.tensor(cell).long().to(self.adjustment_footprint[0].weight.data.device)
+        self.adjust_foot = self.adjustment_footprint(self.coverages(cell))[:, 0].mean(axis=0)
+        self.adjust_count = self.adjustment_count(self.coverages(cell))[:, 0].mean(axis=0)
 
         # print("collapsing", self.adjust_foot, self.adjust_count)
 
 
 class Footprints_head(nn.Module):
-    # This is the output head of the footprints model
-    def __init__(self, n_filters, kernel_size=5, n_scales=50, per_peak_feats=1):
-        """
+    """
+    This is the output head of the footprints model
 
-        Parameters
-        ----------
-        n_filters: int
-            number of filters
-        kernel_size: int
-            kernel size
-        n_scales: int
-            number of footprints scales
-        per_peak_feats: int
-            number of features per peak (such as coverages)
-        """
+
+    Parameters
+    ----------
+    n_filters: int
+        number of filters
+    kernel_size: int
+        kernel size
+    n_scales: int
+        number of footprints scales
+    per_peak_feats: int
+        number of features per peak (such as counts, this is for the count)
+    """
+
+    def __init__(self, n_filters, kernel_size=5, n_scales=50):
         super().__init__()
         self.n_filters = n_filters
         self.kernel_size = kernel_size
         self.n_scale = n_scales
-        self.per_peak_feats = per_peak_feats
+
+        # For the footprint
         self.conv_layer = Conv1dWrapper(
             in_channels=n_filters,
             out_channels=n_scales,
             kernel_size=kernel_size,
             padding=kernel_size // 2,
         )
-        # self.linear = nn.Linear(in_features=n_filters,
-        #                         out_features=per_peak_feats,
-        #                         bias=True)
+        # For the count
         self.linear = Conv1dWrapper(
             in_channels=n_filters,
-            out_channels=per_peak_feats,
+            out_channels=1,
             kernel_size=1,
             padding=0,
             bias=True,
         )
 
     def forward(self, X, *args, output_len=None, modes=None, **kwargs):
+        """
+
+        Parameters
+        ----------
+        X
+        args:
+            args pass to the conv_layer
+        output_len: int | None
+            the output length, if None, keep the same length as the input. This is used to trim the model
+        modes: torch.Tensor | None
+            the modes to be selected for calculating footprints
+        kwargs
+            pass to the conv_layer
+
+        Returns
+        -------
+
+        """
         X_bindingscore = self.conv_layer(X, *args, modes=modes, **kwargs)
         # # Empircally this normalization makes the training more stable
         # X_bindingscore = X_bindingscore - torch.sum(X_bindingscore, dim=(1,2), keepdims=True) / (X_bindingscore.shape[-1] * X_bindingscore.shape[-2])
@@ -518,17 +697,40 @@ class Footprints_head(nn.Module):
             X_count = self.linear(
                 (
                     X.detach().mean(dim=-1, keepdims=True)
-                    if self.training
+                    if self.training  # detach because I constrained that the count cannot affect how the motifs are learned
                     else X.mean(dim=-1, keepdims=True)
                 ),
                 *args,
                 **kwargs,
-            )[..., 0, 0]
+            )[
+                ..., 0, 0
+            ]  # the output shape is (bs, 1, 1), (kernel size 1, pos 1) so we need to squeeze it to (bs, )
 
         return X_bindingscore, X_count
 
 
 class Conv1dLoRA(nn.Module):
+    """
+    This is the Conv1d layer with the LoRA
+
+    Parameters
+    ----------
+    layer: Conv1dWrapper
+        the layer to be wrapped with LoRA
+    A_embedding: nn.Module
+        The embedding module to get the embeddings for A
+    B_embedding: nn.Module
+        The embedding module to get the embeddings for B
+    r: int
+        LoRA rank
+    alpha: float
+        LoRA hyperparameter that controls scale
+    hidden_dim: int
+        hidden dimension from embedding -> LoRA parameters
+    n_layers: int
+        number of layers in the network that goes from embedding -> LoRA parameters
+    """
+
     def __init__(
         self,
         layer,
@@ -542,7 +744,8 @@ class Conv1dLoRA(nn.Module):
         super().__init__()
         assert isinstance(layer, Conv1dWrapper), "The layer must be a Conv1dWrapper layer"
         self.layer = layer
-        self.pretrain_conv = layer.conv
+        self.pretrain_conv = layer.conv  # The actual conv layer behind Conv1dWrapper
+        # Fetch the parameters from the pretrain_conv
         self.layer_dim_in = self.pretrain_conv.in_channels
         self.layer_dim_out = self.pretrain_conv.out_channels
         self.kernel_size = self.pretrain_conv.kernel_size[0]
@@ -572,214 +775,13 @@ class Conv1dLoRA(nn.Module):
                 nn.GELU(),
             ]
             + [
-                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
-            ]
-            * n_layers
-            + [
-                nn.Linear(
-                    in_features=self.hidden_dim,
-                    out_features=int(
-                        self.layer_dim_in * r / self.groups
-                    ),  # lead to a weight matrix of shape (r, layer_dim_in)
-                ),
-            ]
-        )
-        self.A_embedding = nn.Sequential(*layers)
-
-        layers = (
-            [
-                B_embedding,
-                nn.Linear(in_features=self.B_embedding_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
-            ]
-            + [
-                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
-            ]
-            * n_layers
-            + [
-                nn.Linear(
-                    in_features=self.hidden_dim,
-                    out_features=int(
-                        self.layer_dim_out * r * self.kernel_size
-                    ),  # lead to a weight matrix of shape (layer_dim_out, r)
-                ),
-            ]
-        )
-        self.B_embedding = nn.Sequential(*layers)
-
-        # When combined, this will lead to a weight matrix of shape (layer_dim_out, layer_dim_in, kernel_size)
-
-        ## Make sure B starts as all zeros:
-        for i in range(len(self.B_embedding)):
-            if isinstance(self.B_embedding[i], nn.Linear):
-                self.B_embedding[i].bias.data[...] = 0
-                self.B_embedding[i].weight.data[...] = 0
-
-        # test A_output distribution
-        with torch.no_grad():
-            self.A_embedding.eval()
-            self.A_embedding.cuda()
-            test_cell_num = min(100, self.A_embedding[0].weight.shape[0])
-            A_output = self.A_embedding(torch.arange(test_cell_num).long().cuda())
-            mean, std = A_output.mean(), A_output.std()
-            print("A_output mean: {}, std: {}".format(mean, std))
-            # self.scale *= 1 / (std * r)
-            rescale_factor = 1 / (std)
-            self.A_embedding[0].weight.data[...] *= rescale_factor  # rescale the embedding matrix
-
-    @torch.no_grad()
-    def collapse_layer(self, cell):
-        # return a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at cell
-
-        if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
-            raise ValueError("cell must be an integer")
-        if type(cell) == int:
-            cell = [cell]
-        cell = torch.tensor(cell).long().to(self.A_embedding[0].weight.data.device)
-
-        A = self.A_embedding(cell).mean(dim=0)
-        B = self.B_embedding(cell).mean(dim=0)
-        if self.kernel_size == 1:
-            A = A.reshape((self.r, self.layer_dim_in))
-            B = B.reshape((self.layer_dim_out, self.r))
-            weight = torch.matmul(B, A)[..., None]
-        else:
-            A = A.reshape((int(self.layer_dim_in / self.groups), self.r))
-            B = B.reshape((self.r, self.layer_dim_out * self.kernel_size))
-            weight = (
-                torch.matmul(A, B)
-                .reshape(
-                    (
-                        int(self.layer_dim_in / self.groups),
-                        self.layer_dim_out,
-                        self.kernel_size,
+                Residual(
+                    nn.Sequential(
+                        nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
+                        nn.BatchNorm1d(self.hidden_dim),
+                        nn.GELU(),
                     )
                 )
-                .contiguous()
-                .permute(1, 0, 2)
-            )
-        weight_scaled = weight * self.scale
-        new_layer = copy.deepcopy(self.layer)
-        new_layer.conv.weight.data[...] = new_layer.conv.weight.data + weight_scaled
-        return new_layer
-
-    def forward(self, X, cells, modes=None):
-        if self.kernel_size == 1:
-            # When kernel_size == 1, the convolution is actually a linear layer, take a short path
-            A = self.A_embedding(cells).reshape((-1, self.r, self.layer_dim_in))
-            B = self.B_embedding(cells).reshape((-1, self.layer_dim_out, self.r))
-            # x: (batch_size, layer_dim_in, seq_len)
-            lora_x = torch.bmm(A, X)  # (batch_size, r, seq_len)
-            if modes is not None:
-                B = B[:, modes]
-            lora_x = torch.bmm(B, lora_x)  # (batch_size, layer_dim_out, seq_len
-            return lora_x * self.scale + (self.layer(X, modes=modes))
-        else:
-            # When kernel_size > 1, the convolution can be written as groupped convolutioni,
-            # take a long path
-            bs = X.shape[0]  # batch_size
-            A = self.A_embedding(cells).reshape((bs, int(self.layer_dim_in / self.groups), self.r))
-            B = self.B_embedding(cells).reshape((bs, self.r, self.layer_dim_out, self.kernel_size))
-            if modes is not None:
-                print("we actually use modes", modes)
-                B = B[:, :, modes]
-            B = B.reshape((bs, self.r, self.layer_dim_out * self.kernel_size))
-            weight = (
-                torch.bmm(A, B)
-                .reshape(
-                    (
-                        bs,
-                        int(self.layer_dim_in / self.groups),
-                        self.layer_dim_out,
-                        self.kernel_size,
-                    )
-                )
-                .contiguous()
-                .permute(0, 2, 1, 3)
-            )
-            # size of (batch_size, layer_dim_out, layer_dim_in / groups, kernel_size)
-
-            # route 1
-            weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
-            # size of (batch_size * layer_dim_out, layer_dim_in / groups, kernel_size)
-            # X after reshape (1, batch_size*layer_dim_in, seq_len)
-            lora_x = F.conv1d(
-                X.reshape((1, -1, X.shape[-1])),
-                weight=weight,
-                bias=None,
-                dilation=self.dilation,
-                groups=bs * self.groups,
-                padding=self.padding,
-            )  # each batch_size is a group
-            # within each group, the convolution projects from (layer_dim_in, seq_len) to (layer_dim_out, seq_len)
-            # This is equivalent to a for loop over each sample in the batch
-            lora_x = lora_x.view(bs, self.layer_dim_out, -1)
-            X = lora_x * self.scale + self.layer(X, modes=modes)
-
-            # # route 2
-            # weight = weight + self.layer.conv.weight[modes][None]
-            # weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
-            # X = F.conv1d(X.reshape((1, -1, X.shape[-1])), weight=weight,
-            #                 bias=None, dilation=self.dilation,
-            #                 groups=bs * self.groups, padding=self.padding)
-            # X = X.view(bs, self.layer_dim_out, -1)
-            # X = X + self.layer.conv.bias[modes][None, :, None]
-
-            return X
-
-
-class Conv1dLoRAv2(nn.Module):
-    def __init__(
-        self,
-        layer,
-        A_embedding=None,
-        B_embedding=None,
-        r=8,
-        alpha=None,
-        hidden_dim=None,
-        n_layers=0,
-    ):
-        super().__init__()
-        assert isinstance(layer, Conv1dWrapper), "The layer must be a Conv1dWrapper layer"
-        self.layer = layer
-        self.pretrain_conv = layer.conv
-        self.layer_dim_in = self.pretrain_conv.in_channels
-        self.layer_dim_out = self.pretrain_conv.out_channels
-        self.kernel_size = self.pretrain_conv.kernel_size[0]
-        self.dilation = self.pretrain_conv.dilation[0]
-        self.padding = self.pretrain_conv.padding[0]
-        self.groups = self.pretrain_conv.groups
-
-        self.A_embedding_dim = A_embedding.embedding_dim
-        self.B_embedding_dim = B_embedding.embedding_dim
-
-        if alpha is None:
-            alpha = r
-
-        self.scale = alpha / r
-        self.r = r
-
-        if hidden_dim is None:
-            self.hidden_dim = self.A_embedding_dim
-        else:
-            self.hidden_dim = hidden_dim
-
-        layers = (
-            [
-                A_embedding,
-                nn.Linear(in_features=self.A_embedding_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
-            ]
-            + [
-                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
             ]
             * n_layers
             + [
@@ -801,9 +803,13 @@ class Conv1dLoRAv2(nn.Module):
                 nn.GELU(),
             ]
             + [
-                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
+                Residual(
+                    nn.Sequential(
+                        nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
+                        nn.BatchNorm1d(self.hidden_dim),
+                        nn.GELU(),
+                    )
+                )
             ]
             * n_layers
             + [
@@ -824,6 +830,11 @@ class Conv1dLoRAv2(nn.Module):
             if isinstance(self.B_embedding[i], nn.Linear):
                 self.B_embedding[i].bias.data[...] = 0
                 self.B_embedding[i].weight.data[...] = 0
+            elif isinstance(self.B_embedding[i], nn.Sequential):
+                for j in range(len(self.B_embedding[i])):
+                    if isinstance(self.B_embedding[i][j], nn.Linear):
+                        self.B_embedding[i][j].bias.data[...] = 0
+                        self.B_embedding[i][j].weight.data[...] = 0
 
         # test A_output distribution
         with torch.no_grad():
@@ -839,7 +850,16 @@ class Conv1dLoRAv2(nn.Module):
 
     @torch.no_grad()
     def collapse_layer(self, cell):
-        # return a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at cell
+        """
+        Collapse the LoRA layer to a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at a specific cell or the average of a set of cells
+        Parameters
+        ----------
+        cell
+
+        Returns
+        -------
+
+        """
 
         if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
             raise ValueError("cell must be an integer")
@@ -847,26 +867,25 @@ class Conv1dLoRAv2(nn.Module):
             cell = [cell]
         cell = torch.tensor(cell).long().to(self.A_embedding[0].weight.data.device)
 
-        A = self.A_embedding(cell).mean(dim=0)
-        B = self.B_embedding(cell).mean(dim=0)
-        if self.kernel_size == 1:
+        A = self.A_embedding(cell).mean(dim=0)  # (shape of self.layer_dim_in * r)
+        B = self.B_embedding(cell).mean(
+            dim=0
+        )  # (shape of self.layer_dim_out * r * kernel_size / groups)
+
+        if self.kernel_size == 1 and self.groups == 1:
+            # This is just to be consistent with the forward case.
             A = A.reshape((self.r, self.layer_dim_in))
             B = B.reshape((self.layer_dim_out, self.r))
             weight = torch.matmul(B, A)[..., None]
         else:
             A = A.reshape((int(self.layer_dim_in), self.r))
             B = B.reshape((self.r, int(self.layer_dim_out / self.groups) * self.kernel_size))
-            weight = (
-                torch.matmul(A, B)
-                .reshape(
-                    (
-                        int(self.layer_dim_in / self.groups),
-                        self.layer_dim_out,
-                        self.kernel_size,
-                    )
+            weight = torch.matmul(A, B).reshape(
+                (
+                    self.layer_dim_out,
+                    int(self.layer_dim_in / self.groups),
+                    self.kernel_size,
                 )
-                .contiguous()
-                .permute(1, 0, 2)
             )
         weight_scaled = weight * self.scale
         new_layer = copy.deepcopy(self.layer)
@@ -874,10 +893,14 @@ class Conv1dLoRAv2(nn.Module):
         return new_layer
 
     def forward(self, X, cells, modes=None):
-        if self.kernel_size == 1:
+        A = self.A_embedding(cells)  # (shape of (bs, self.layer_dim_in * r)
+        B = self.B_embedding(cells)  # (shape of (bs, self.layer_dim_out * r * kernel_size / groups)
+        if self.kernel_size == 1 and self.groups == 1:
             # When kernel_size == 1, the convolution is actually a linear layer, take a short path
-            A = self.A_embedding(cells).reshape((-1, self.r, self.layer_dim_in))
-            B = self.B_embedding(cells).reshape((-1, self.layer_dim_out, self.r))
+            A = A.reshape((-1, self.r, self.layer_dim_in))
+            B = B.reshape(
+                (-1, self.layer_dim_out, self.r)
+            )  # because both kernel_size and groups are 1
             # x: (batch_size, layer_dim_in, seq_len)
             lora_x = torch.bmm(A, X)  # (batch_size, r, seq_len)
             if modes is not None:
@@ -885,37 +908,27 @@ class Conv1dLoRAv2(nn.Module):
             lora_x = torch.bmm(B, lora_x)  # (batch_size, layer_dim_out, seq_len
             return lora_x * self.scale + (self.layer(X, modes=modes))
         else:
-            # When kernel_size > 1, the convolution can be written as groupped convolutioni,
+            # When kernel_size > 1, the convolution can be written as groupped convolution,
             # take a long path
             bs = X.shape[0]  # batch_size
-            A = self.A_embedding(cells).reshape((bs, int(self.layer_dim_in), self.r))
-            B = self.B_embedding(cells).reshape(
-                (bs, self.r, int(self.layer_dim_out / self.groups), self.kernel_size)
-            )
-            if modes is not None:
-                B = B[:, modes]
+            A = A.reshape((bs, int(self.layer_dim_in), self.r))
             B = B.reshape((bs, self.r, int(self.layer_dim_out / self.groups) * self.kernel_size))
-            weight = (
-                torch.bmm(A, B)
-                .reshape(
-                    (
-                        bs,
-                        int(self.layer_dim_in / self.groups),
-                        self.layer_dim_out,
-                        self.kernel_size,
-                    )
+            assert modes is None, "modes is not supported for kernel_size > 1"
+            weight = torch.bmm(A, B).reshape(
+                (
+                    bs * self.layer_dim_out,
+                    int(self.layer_dim_in / self.groups),
+                    self.kernel_size,
                 )
-                .contiguous()
-                .permute(0, 2, 1, 3)
             )
-            # print (torch.sum(weight), weight.shape)
-            # size of (batch_size, layer_dim_out, layer_dim_in / groups, kernel_size)
-            # route 1
-            weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
             # size of (batch_size * layer_dim_out, layer_dim_in / groups, kernel_size)
-            # X after reshape (1, batch_size*layer_dim_in, seq_len)
+            # route 1
+            # weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
+            # size of (batch_size * layer_dim_out, layer_dim_in / groups, kernel_size)
             lora_x = F.conv1d(
-                X.reshape((1, -1, X.shape[-1])),
+                X.reshape(
+                    (1, -1, X.shape[-1])
+                ),  # X after reshape (1, batch_size * layer_dim_in, seq_len)
                 weight=weight,
                 bias=None,
                 dilation=self.dilation,
@@ -925,248 +938,115 @@ class Conv1dLoRAv2(nn.Module):
             # within each group, the convolution projects from (layer_dim_in, seq_len) to (layer_dim_out, seq_len)
             # This is equivalent to a for loop over each sample in the batch
             lora_x = lora_x.view(bs, self.layer_dim_out, -1)
-            # print (torch.sum(lora_x), lora_x.shape)
             X = lora_x * self.scale + self.layer(X, modes=modes)
-
-            # # route 2
-            # weight = weight + self.layer.conv.weight[modes][None]
-            # weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
-            # X = F.conv1d(X.reshape((1, -1, X.shape[-1])), weight=weight,
-            #                 bias=None, dilation=self.dilation,
-            #                 groups=bs * self.groups, padding=self.padding)
-            # X = X.view(bs, self.layer_dim_out, -1)
-            # X = X + self.layer.conv.bias[modes][None, :, None]
 
             return X
 
 
-class Conv1dLoRAv3(nn.Module):
-    def __init__(
-        self,
-        layer,
-        A_embedding=None,
-        B_embedding=None,
-        r=8,
-        alpha=None,
-        hidden_dim=None,
-        n_layers=0,
-    ):
-        super().__init__()
-        assert isinstance(layer, Conv1dWrapper), "The layer must be a Conv1dWrapper layer"
-        self.layer = layer
-        self.pretrain_conv = layer.conv
-        self.layer_dim_in = self.pretrain_conv.in_channels
-        self.layer_dim_out = self.pretrain_conv.out_channels
-        self.kernel_size = self.pretrain_conv.kernel_size[0]
-        self.dilation = self.pretrain_conv.dilation[0]
-        self.padding = self.pretrain_conv.padding[0]
-        self.groups = self.pretrain_conv.groups
+class CumulativeCounter:
+    """Cumulative counter for calculating mean and sum of values."""
 
-        self.A_embedding_dim = A_embedding.embedding_dim
-        self.B_embedding_dim = B_embedding.embedding_dim
+    def __init__(self):
+        self.total = 0
+        self.count = 0
 
-        if alpha is None:
-            alpha = r
+    def update(self, value: Union[np.ndarray, torch.Tensor]) -> None:
+        """
+        Update the cumulative counter with a new value.
 
-        self.scale = alpha / r
-        self.r = r
+        Parameters
+        ----------
+            value (np.ndarray or torch.Tensor): The value to be added to the counter.
+        """
+        try:
+            self.total += float(np.nansum(value))
+        except TypeError:
+            # torch
+            self.total += float(torch.nansum(value).detach().cpu().item())
+        # both numpy and torch will work
+        self.count += np.prod(value.shape)
 
-        if hidden_dim is None:
-            self.hidden_dim = self.A_embedding_dim
-        else:
-            self.hidden_dim = hidden_dim
+    def mean(self) -> float:
+        """
+        Calculate the mean of the values in the counter.
 
-        layers = (
-            [
-                A_embedding,
-                nn.Linear(in_features=self.A_embedding_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
-            ]
-            + [
-                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
-            ]
-            * n_layers
-            + [
-                nn.Linear(
-                    in_features=self.hidden_dim,
-                    out_features=int(
-                        # self.layer_dim_in * r
-                        r
-                    ),  # lead to a weight matrix of shape (r, layer_dim_in)
-                ),
-            ]
-        )
+        Returns
+        -------
+            float: The mean value.
+        """
+        if self.count == 0:
+            return 0
+        return self.total / self.count
 
-        self.A_embedding = nn.Sequential(*layers)
-        self.A_vocab = nn.Parameter(
-            torch.normal(0, 1, (1, r, self.layer_dim_in)).to(self.A_embedding[0].weight.data.device)
-        )
-        layers = (
-            [
-                B_embedding,
-                nn.Linear(in_features=self.B_embedding_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
-            ]
-            + [
-                nn.Linear(in_features=self.hidden_dim, out_features=self.hidden_dim),
-                nn.BatchNorm1d(self.hidden_dim),
-                nn.GELU(),
-            ]
-            * n_layers
-            + [
-                nn.Linear(
-                    in_features=self.hidden_dim,
-                    out_features=int(
-                        r
-                        # self.layer_dim_out * r * self.kernel_size / self.groups
-                    ),  # lead to a weight matrix of shape (layer_dim_out, r)
-                ),
-            ]
-        )
-        self.B_embedding = nn.Sequential(*layers)
-        self.B_vocab = nn.Parameter(
-            torch.zeros((1, r, int(self.layer_dim_out * self.kernel_size / self.groups))).to(
-                self.A_embedding[0].weight.data.device
-            )
-        )
-        # print (self.A_vocab, self.B_vocab)
-        # When combined, this will lead to a weight matrix of shape (layer_dim_out, layer_dim_in, kernel_size)
+    def sum(self) -> float:
+        """
+        Calculate the sum of the values in the counter.
 
-        ## Make sure B starts as all zeros:
-        for i in range(len(self.B_embedding)):
-            if isinstance(self.B_embedding[i], nn.Linear):
-                self.B_embedding[i].bias.data[...] = 0
-                self.B_embedding[i].weight.data[...] = 0
+        Returns
+        -------
+            float: The sum value.
+        """
+        return self.total
 
-        # test A_output distribution
-        with torch.no_grad():
-            self.A_embedding.eval()
-            self.A_embedding.cuda()
-            # self.A_vocab = self.A_vocab.cuda()
-            test_cell_num = min(100, self.A_embedding[0].weight.shape[0])
-            A_output = self.A_embedding(torch.arange(test_cell_num).long().cuda())
-            A_output = A_output[..., None] * self.A_vocab.cuda()  # bs, r, layer_dim_in
-            mean, std = A_output.mean(), A_output.std()
-            print("A_output mean: {}, std: {}".format(mean, std))
-            # self.scale *= 1 / (std * r)
-            rescale_factor = 1 / (std)
-            # self.A_vocab.data[...] *= rescale_factor.to(self.A_vocab.data.device)  # rescale the embedding matrix
-            self.A_embedding[0].weight.data[...] *= rescale_factor  # rescale the embedding matrix
 
-    @torch.no_grad()
-    def collapse_layer(self, cell):
-        # return a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at cell
+class CumulativePearson:
+    """Cumulative pearson counter for calculating the pearson correlation coefficient."""
 
-        if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
-            raise ValueError("cell must be an integer")
-        if type(cell) == int:
-            cell = [cell]
-        cell = torch.tensor(cell).long().to(self.A_embedding[0].weight.data.device)
+    def __init__(self):
+        self.count = 0
+        self.x_counter = CumulativeCounter()
+        self.y_counter = CumulativeCounter()
+        self.xy_counter = CumulativeCounter()
+        self.x2_counter = CumulativeCounter()
+        self.y2_counter = CumulativeCounter()
 
-        A = self.A_embedding(cell).mean(dim=0)
-        B = self.B_embedding(cell).mean(dim=0)
-        if self.kernel_size == 1:
-            A = A.reshape((self.r, self.layer_dim_in))
-            B = B.reshape((self.layer_dim_out, self.r))
-            weight = torch.matmul(B, A)[..., None]
-        else:
-            A = A.reshape((int(self.layer_dim_in), self.r))
-            B = B.reshape((self.r, int(self.layer_dim_out / self.groups) * self.kernel_size))
-            weight = (
-                torch.matmul(A, B)
-                .reshape(
-                    (
-                        int(self.layer_dim_in / self.groups),
-                        self.layer_dim_out,
-                        self.kernel_size,
-                    )
-                )
-                .contiguous()
-                .permute(1, 0, 2)
-            )
-        weight_scaled = weight * self.scale
-        new_layer = copy.deepcopy(self.layer)
-        new_layer.conv.weight.data[...] = new_layer.conv.weight.data + weight_scaled
-        return new_layer
+    def update(
+        self, x: Union[np.ndarray, torch.Tensor], y: Union[np.ndarray, torch.Tensor]
+    ) -> None:
+        """
+        Update the cumulative pearson counter with new values.
 
-    def forward(self, X, cells, modes=None):
-        if self.kernel_size == 1:
-            # When kernel_size == 1, the convolution is actually a linear layer, take a short path
-            A = self.A_embedding(cells)[..., None] * self.A_vocab  # shape of (bs, r, layer_dim_in)
-            B = (
-                self.B_embedding(cells)[..., None] * self.B_vocab
-            )  # shape of (bs, r, int(self.layer_dim_out * self.kernel_size / self.groups))
-            B = B.transpose(
-                -1, -2
-            )  # shape of (bs, int(self.layer_dim_out * self.kernel_size / self.groups), r)
-            # x: (batch_size, layer_dim_in, seq_len)
-            lora_x = torch.bmm(A, X)  # (batch_size, r, seq_len)
-            if modes is not None:
-                B = B[:, modes]
-            lora_x = torch.bmm(B, lora_x)  # (batch_size, layer_dim_out, seq_len
-            return lora_x * self.scale + (self.layer(X, modes=modes))
-        else:
-            # When kernel_size > 1, the convolution can be written as groupped convolutioni,
-            # take a long path
-            bs = X.shape[0]  # batch_size
+        Parameters
+        ----------
+            x (np.ndarray or torch.Tensor): The x values to be added to the counter.
+            y (np.ndarray or torch.Tensor): The y values to be added to the counter.
+        """
+        self.x_counter.update(x)
+        self.y_counter.update(y)
+        self.xy_counter.update(x * y)
+        self.x2_counter.update(x**2)
+        self.y2_counter.update(y**2)
 
-            A = (self.A_embedding(cells)[..., None] * self.A_vocab).transpose(
-                -1, -2
-            )  # shape of (bs,  layer_dim_in, r)
-            B = (
-                self.B_embedding(cells)[..., None] * self.B_vocab
-            )  # shape of (bs, r, int(self.layer_dim_out * self.kernel_size / self.groups))
+    def corr(self) -> float:
+        """
+        Calculate the pearson correlation coefficient.
 
-            if modes is not None:
-                raise ValueError("modes not supported for kernel_size > 1")
-                B = B[:, modes]
+        Returns
+        -------
+            float: The pearson correlation coefficient.
+        """
+        nx = self.x_counter.count
+        ny = self.y_counter.count
+        assert nx == ny, "Length mismatch between x and y"
+        count = nx
 
-            weight = (
-                torch.bmm(
-                    A, B
-                )  # (bs, layer_dim_in, int(self.layer_dim_out * self.kernel_size / self.groups))
-                .reshape(
-                    (
-                        bs,
-                        int(self.layer_dim_in / self.groups),
-                        self.layer_dim_out,
-                        self.kernel_size,
-                    )
-                )
-                .contiguous()
-                .permute(0, 2, 1, 3)
-            )
-            # print (torch.sum(weight), weight.shape)
-            # size of (batch_size, layer_dim_out, layer_dim_in / groups, kernel_size)
-            # route 1
-            weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
-            # size of (batch_size * layer_dim_out, layer_dim_in / groups, kernel_size)
-            # X after reshape (1, batch_size*layer_dim_in, seq_len)
-            lora_x = F.conv1d(
-                X.reshape((1, -1, X.shape[-1])),
-                weight=weight,
-                bias=None,
-                dilation=self.dilation,
-                groups=bs * self.groups,
-                padding=self.padding,
-            )  # each batch_size is a group
-            # within each group, the convolution projects from (layer_dim_in, seq_len) to (layer_dim_out, seq_len)
-            # This is equivalent to a for loop over each sample in the batch
-            lora_x = lora_x.view(bs, self.layer_dim_out, -1)
-            # print (torch.sum(lora_x), lora_x.shape)
-            X = lora_x * self.scale + self.layer(X, modes=modes)
+        if nx == 0:
+            return 0
 
-            # # route 2
-            # weight = weight + self.layer.conv.weight[modes][None]
-            # weight = weight.reshape((-1, int(self.layer_dim_in / self.groups), self.kernel_size))
-            # X = F.conv1d(X.reshape((1, -1, X.shape[-1])), weight=weight,
-            #                 bias=None, dilation=self.dilation,
-            #                 groups=bs * self.groups, padding=self.padding)
-            # X = X.view(bs, self.layer_dim_out, -1)
-            # X = X + self.layer.conv.bias[modes][None, :, None]
+        sum_x = self.x_counter.sum()
+        mean_x = self.x_counter.mean()
+        sum_y = self.y_counter.sum()
+        mean_y = self.y_counter.mean()
+        sum_xy = self.xy_counter.sum()
+        sum_x2 = self.x2_counter.sum()
+        sum_y2 = self.y2_counter.sum()
 
-            return X
+        covariance = sum_xy - mean_x * sum_y - mean_y * sum_x + count * mean_x * mean_y
+        variance_x = sum_x2 - 2 * mean_x * sum_x + count * mean_x**2
+        variance_y = sum_y2 - 2 * mean_y * sum_y + count * mean_y**2
+
+        # Pearson correlation
+        correlation = covariance / (
+            math.sqrt(variance_x * variance_y) + 1e-8
+        )  # Adding small value for numerical stability
+        return correlation

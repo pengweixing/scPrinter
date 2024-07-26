@@ -16,7 +16,20 @@ from tqdm.auto import tqdm, trange
 from .genome import Genome
 from .utils import *
 
-anndata_keys = ["X", "obs", "var", "obsm", "obsp", "varm", "var", "uns", "shape", "varp"]
+anndata_keys = [
+    "X",
+    "obs",
+    "var",
+    "obsm",
+    "obsp",
+    "varm",
+    "var",
+    "uns",
+    "shape",
+    "varp",
+    "obs_names",
+    "var_names",
+]
 
 
 def get_global_disp_models():
@@ -148,8 +161,11 @@ class scPrinter:
         self.insertion_profile = insertion_profile
 
         if adata_path is not None:
-            self.file_path = adata_path
-
+            adata_name = os.path.basename(adata_path)
+            adata_name = ".".join(adata_name.split(".")[:-1])
+            self.file_path = os.path.join(os.path.dirname(adata_path), f"{adata_name}_supp")
+            if not os.path.exists(self.file_path):
+                os.makedirs(self.file_path)
         # load dispersion models
         self.load_disp_model()
         # initialize binding score model empty dict

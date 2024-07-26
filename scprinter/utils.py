@@ -22,8 +22,42 @@ from pyfaidx import Fasta
 from scipy.sparse import csr_matrix
 from tqdm.auto import tqdm
 
+# def DNA_one_hot(sequence, alphabet="ACGT", dtype="float", device="cpu"):
+#     """
+#     Convert a DNA sequence string into a one-hot encoding tensor.
+#
+#     Parameters
+#     ----------
+#     sequence : str
+#         DNA sequence string.
+#     dtype : str
+#         Data type of the returned tensor.
+#     device : str
+#         Device of the returned tensor.
+#     verbose : bool
+#         If True, print progress.
+#
+#     Returns
+#     -------
+#     torch.Tensor
+#         One-hot encoding tensor.
+#     """
+#     lookup = {char: i for i, char in enumerate(alphabet)}
+#     lookup["N"] = -1
+#     embed = torch.zeros((len(alphabet) + 1, len(sequence)), dtype=torch.int8, device=device)
+#     embed[[lookup[char] for char in sequence], torch.arange(len(sequence))] = 1
+#
+#     return embed[:-1, :]
 
-def DNA_one_hot(sequence, alphabet="ACGT", dtype="float", device="cpu"):
+DNAmapping = np.zeros((128, 4), dtype=int)
+DNAmapping[65] = [1, 0, 0, 0]  # A
+DNAmapping[67] = [0, 1, 0, 0]  # C
+DNAmapping[71] = [0, 0, 1, 0]  # G
+DNAmapping[84] = [0, 0, 0, 1]  # T
+DNAmapping[78] = [0, 0, 0, 0]  # N
+
+
+def DNA_one_hot(sequence, dtype="float", device="cpu"):
     """
     Convert a DNA sequence string into a one-hot encoding tensor.
 
@@ -43,12 +77,12 @@ def DNA_one_hot(sequence, alphabet="ACGT", dtype="float", device="cpu"):
     torch.Tensor
         One-hot encoding tensor.
     """
-    lookup = {char: i for i, char in enumerate(alphabet)}
-    lookup["N"] = -1
-    embed = torch.zeros((len(alphabet) + 1, len(sequence)), dtype=torch.int8, device=device)
-    embed[[lookup[char] for char in sequence], torch.arange(len(sequence))] = 1
-
-    return embed[:-1, :]
+    if type(sequence) is list or type(sequence) is np.ndarray:
+        sequence = "".join(sequence)
+    ascii_values = np.frombuffer(sequence.encode("ascii"), dtype=np.uint8)
+    # Use the ASCII values to index into the mapping array
+    one_hot_encoded = DNAmapping[ascii_values]
+    return torch.from_numpy(one_hot_encoded).type(torch.int8).to(device).T
 
 
 def zscore2pval(footprint):
@@ -309,7 +343,11 @@ def regionparser(
 
 
 def frags_to_insertions(
-    data, split: bool = False, extra_plus_shift: int = 0, extra_minus_shift: int = 0
+    data,
+    split: bool = False,
+    extra_plus_shift: int = 0,
+    extra_minus_shift: int = 0,
+    to_csc=True,
 ):
     """
     Underlying function that transform snapatac fragment format to insertions
@@ -372,7 +410,9 @@ def frags_to_insertions(
         for chrom, start, end in zip(
             data.uns["reference_sequences"]["reference_seq_name"], start, end
         ):
-            data.obsm["insertion_%s" % chrom] = insertion[:, start:end].tocsc()
+            data.obsm["insertion_%s" % chrom] = (
+                insertion[:, start:end].tocsc() if to_csc else insertion[:, start:end]
+            )
 
     else:
         data.obsm["insertion"] = insertion
@@ -644,6 +684,30 @@ def downloadDispModel():
 
 def downloadTFBSModel():
     return None
+
+
+# Doing the same thing as conv in R, but more generalizable and in torch
+def rz_conv_torch(a, n=2):
+    if n == 0:
+        return a
+    shapes = a.shape
+    if len(shapes) == 1:
+        a = a[None, None, :]
+    else:
+        a = a.reshape((-1, 1, shapes[-1]))
+
+    a = torch.nn.functional.conv1d(
+        a,
+        torch.ones((1, 1, n * 2), device=a.device, dtype=a.dtype),
+        torch.zeros((1), device=a.device, dtype=a.dtype),
+        padding=n,
+    )[..., 0, 1:]
+
+    if len(shapes) == 1:
+        a = a[0]
+    else:
+        a = a.reshape(shapes)
+    return a
 
 
 # Doing the same thing as conv in R, but more generalizable

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import multiprocessing
 import os.path
+import subprocess
 import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Literal
 
+import anndata
 import numpy as np
 import pyBigWig
 import snapatac2 as snap
@@ -17,6 +19,7 @@ from tqdm.auto import tqdm, trange
 
 from .genome import Genome
 from .io import load_printer, scPrinter
+from .peak import *
 from .shift_detection import detect_shift
 from .utils import *
 
@@ -30,6 +33,7 @@ def import_data(
     auto_detect_shift,
     tempname,
     close_after_import=True,
+    to_csc=True,
     **kwargs,
 ):
     """
@@ -58,13 +62,6 @@ def import_data(
             print("gzipping %s, because currently the backend requires gzipped file" % path)
             os.system("gzip %s" % path)
             path = path + ".gz"
-    if auto_detect_shift:
-        print(
-            "You are now using the beta auto_detect_shift function, this overwrites the plus_shift and minus_shift you provided"
-        )
-        print("If you believe the auto_detect_shift is wrong, please set auto_detect_shift=False")
-        plus_shift, minus_shift = detect_shift(path, genome)
-        print("detected plus_shift and minus_shift are", plus_shift, minus_shift, "for", path)
 
     # this is equivalent to do +4/-4 shift,
     # because python is 0-based, and I'll just use the right end as index
@@ -83,8 +80,13 @@ def import_data(
         shift_right=0,
         **kwargs,
     )
+    snap.metrics.tsse(data, genome.fetch_gff())
     data = frags_to_insertions(
-        data, split=True, extra_plus_shift=extra_plus_shift, extra_minus_shift=extra_minus_shift
+        data,
+        split=True,
+        extra_plus_shift=extra_plus_shift,
+        extra_minus_shift=extra_minus_shift,
+        to_csc=to_csc,
     )
     if close_after_import:
         data.close()
@@ -171,6 +173,17 @@ def import_fragments(
 
     if len(pathsToFrags) == 1:
         path = pathsToFrags[0]
+
+        if auto_detect_shift:
+            plus_shift, minus_shift = detect_shift(path, genome)
+            print(
+                "You are now using the beta auto_detect_shift function, this overwrites the plus_shift and minus_shift you provided"
+            )
+            print(
+                "If you believe the auto_detect_shift is wrong, please set auto_detect_shift=False"
+            )
+            print("detected plus_shift and minus_shift are", plus_shift, minus_shift, "for", path)
+
         data = import_data(
             path,
             barcodes[0],
@@ -192,8 +205,21 @@ def import_fragments(
         )
 
         ct = 0
+        if auto_detect_shift:
+            print(
+                "You are now using the beta auto_detect_shift function, this overwrites the plus_shift and minus_shift you provided"
+            )
+            print(
+                "If you believe the auto_detect_shift is wrong, please set auto_detect_shift=False"
+            )
         bar = trange(len(pathsToFrags), desc="Importing fragments")
         for path, barcode in zip(pathsToFrags, barcodes):
+            if auto_detect_shift:
+                plus_shift, minus_shift = detect_shift(path, genome)
+                print(
+                    "detected plus_shift and minus_shift are", plus_shift, minus_shift, "for", path
+                )
+
             p_list.append(
                 pool.submit(
                     import_data,
@@ -205,6 +231,7 @@ def import_fragments(
                     auto_detect_shift,
                     savename + "_part%d" % ct,
                     True,
+                    False,
                     **kwargs,
                 )
             )
@@ -214,19 +241,22 @@ def import_fragments(
         for p in tqdm(as_completed(p_list), total=len(p_list)):
             savepath = p.result()
             adatas.append((savepath.split("_")[-1], savepath))
+            # adatas.append(anndata.read_h5ad(savepath))
             sys.stdout.flush()
 
         data = snap.AnnDataSet(adatas=adatas, filename=savename + "_temp")
-
         # Now transfer the insertions to the final AnnData object
         data2 = snap.AnnData(filename=savename)
         data2.obs = data.obs[:]
         data2.obs_names = data.obs_names
         print("start transferring insertions")
-        for chrom in data.uns["reference_sequences"]["reference_seq_name"]:
-            key = f"insertions_{chrom}"
-            insertions = data.uns[key]
+        for key in data.adatas.obsm.keys():
+            if "insertions" not in key:
+                continue
+            insertions = data.adatas.obsm[key]
             data2.obsm[key] = insertions.tocsc()
+        for key in data.adatas.obs:
+            data2.obs[key] = data.adatas.obs[key][:]
 
         data2.uns["reference_sequences"] = data.uns["reference_sequences"]
         data.close()
@@ -239,7 +269,7 @@ def import_fragments(
 
     data.uns["genome"] = f"{genome=}".split("=")[0]
     data.uns["unique_string"] = unique_string
-    snap.metrics.tsse(data, genome.fetch_gff())
+
     data.close()
 
     return load_printer(savename, genome)
@@ -444,7 +474,7 @@ def export_bigwigs(
     for name, grouping in zip(group_names, cell_grouping):
         print("Creating bigwig for %s" % name)
 
-        path = os.path.join(os.path.dirname(printer.file_path), "%s.bw" % name)
+        path = os.path.join(printer.file_path, "%s.bw" % name)
 
         bw = pyBigWig.open(path, "w")
         header = []
@@ -476,3 +506,94 @@ def export_bigwigs(
         a[str(name)] = str(path)
 
     printer.insertion_file.uns["group_bigwig"] = a
+
+
+def create_frag_group(temp_path, frag_file, cell_grouping, group_name):
+    bcs = np.sort(np.unique(cell_grouping))
+    with open(os.path.join(temp_path, f"{group_name}_whitelist.txt"), "w") as f:
+        for w in bcs:
+            f.write(w + "\n")
+    whitelist_file = os.path.join(temp_path, f"{group_name}_whitelist.txt")
+    filtered_frag_file = os.path.join(temp_path, f"{group_name}_filtered_frag.tsv.gz")
+    command = f"zcat {frag_file} | awk -v OFS='\t' 'NR==FNR{{a[$1]; next}} ($4 in a)' {whitelist_file} - | gzip > {filtered_frag_file}"
+    # print (command)
+    # Execute the command using subprocess.run
+    subprocess.run(command, shell=True, check=True)
+
+
+def call_peak_one_group(file_path, frag_file, grouping, name, preset, clean_temp=True):
+    if grouping is not None:
+        create_frag_group(file_path, frag_file, grouping, name)
+    macs2(
+        (
+            os.path.join(file_path, f"{name}_filtered_frag.tsv.gz")
+            if grouping is not None
+            else frag_file
+        ),
+        name,
+        os.path.join(file_path, "macs2"),
+        p_cutoff=0.01 if preset == "seq2PRINT" else None,
+    )
+    if clean_temp:
+        os.remove(os.path.join(file_path, f"{name}_filtered_frag.tsv.gz"))
+        os.remove(os.path.join(file_path, f"{name}_whitelist.txt"))
+
+
+def call_peaks(
+    printer,
+    frag_file,
+    cell_grouping,
+    group_names,
+    iterative_peak_merging=True,
+    merge_across_groups=False,
+    peak_width=1000,
+    clean_temp=True,
+    preset: Literal["seq2PRINT", "chromvar", None] = None,
+    n_jobs=20,
+    **kwargs,
+):
+    if type(group_names) not in [np.ndarray, list]:
+        group_names = [group_names]
+        cell_grouping = [cell_grouping]
+
+    pool = ProcessPoolExecutor(max_workers=n_jobs)
+
+    if "peak_calling" in printer.uns:
+        peak_calling = printer.uns["peak_calling"]
+    else:
+        peak_calling = {}
+
+    for name, grouping in zip(group_names, cell_grouping):
+        pool.submit(
+            call_peak_one_group, printer.file_path, frag_file, grouping, name, preset, clean_temp
+        )
+
+    pool.shutdown(wait=True)
+    for name in group_names:
+        peak = os.path.join(printer.file_path, "macs2", f"{name}_peaks.narrowPeak")
+        peak = resize_bed_df(pd.read_csv(peak, sep="\t", header=None), peak_width)
+        peak_calling[name] = peak
+
+    if iterative_peak_merging:
+        if merge_across_groups:
+            cleaned_peaks = clean_macs2(
+                group_names,
+                os.path.join(printer.file_path, "macs2"),
+                peak_width,
+                printer.genome,
+                preset=preset,
+                **kwargs,
+            )
+            peak_calling["merged"] = cleaned_peaks
+        else:
+            for name in group_names:
+                cleaned_peaks = clean_macs2(
+                    [name],
+                    os.path.join(printer.file_path, "macs2"),
+                    peak_width,
+                    printer.genome,
+                    preset=preset,
+                    **kwargs,
+                )
+                peak_calling[name + "_cleaned"] = cleaned_peaks
+    printer.uns["peak_calling"] = peak_calling

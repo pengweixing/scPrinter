@@ -1,30 +1,17 @@
-import argparse
 import gc
-import json
 import os.path
 import pickle
-import random
-import socket
-import time
-from copy import deepcopy
 
-import h5py
-import numpy as np
 import pandas as pd
-import torch
 import transformers
-import wandb
-from sklearn.preprocessing import StandardScaler
 
 import scprinter as scp
+from scprinter.backup.ema import EMA
+from scprinter.backup.scdataloader import *
 from scprinter.seq.dataloader import *
-from scprinter.seq.ema import EMA
-from scprinter.seq.minimum_footprint import *
 from scprinter.seq.Models import *
 from scprinter.seq.Modules import *
-from scprinter.seq.scdataloader import *
-from scprinter.utils import load_entire_hdf5, loadDispModel
-from wandb_main import construct_model_from_config
+from scprinter.utils import loadDispModel
 
 
 def main(config=None, enable_wandb=True):
@@ -170,6 +157,7 @@ def main(config=None, enable_wandb=True):
             lora_count_cnn=config["lora_count_cnn"],
             method=method,
             n_lora_layers=config["n_lora_layers"],
+            coverage=False,
         )
 
         pretrain_lora_model = os.path.join(data_dir, config["pretrain_lora_model"])
@@ -181,6 +169,20 @@ def main(config=None, enable_wandb=True):
         acc_model.profile_cnn_model.linear.layer.load_state_dict(
             pretrain_lora_model.profile_cnn_model.linear.layer.state_dict()
         )
+        #
+        # acc_model.profile_cnn_model.adjustment_footprint.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.adjustment_footprint.state_dict()
+        # )
+        # acc_model.profile_cnn_model.adjustment_count.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.adjustment_count.state_dict()
+        # )
+        #
+        # acc_model.profile_cnn_model.footprints_head.conv_layer.layer.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer.layer.state_dict()
+        # )
+        # acc_model.profile_cnn_model.footprints_head.linear.layer.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.footprints_head.linear.layer.state_dict()
+        # )
 
         for flag, module, pretrain_module in [
             (

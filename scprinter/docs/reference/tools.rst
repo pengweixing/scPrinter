@@ -34,3 +34,41 @@ Insertion profile
    :toctree: _autosummary
 
    tl.get_insertions
+
+seq2PRINT: step 1 (create model training configuration)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autosummary::
+   :toctree: _autosummary
+
+   tl.seq_model_config
+   tl.seq_lora_model_config
+   tl.seq_lora_slice_model_config
+
+seq2PRINT: step 2 (launch training scripts for the models)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autosummary::
+   :toctree: _autosummary
+
+   tl.launch_seq2print
+
+
+seq2PRINT: step 3 (generating the sequence-based TF binding scores)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autosummary::
+   :toctree: _autosummary
+
+   tl.seq_tfbs_seq2print
+   tl.seq_attr_seq2print
+
+seq2PRINT: step 4 (de novo motif discovery)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autosummary::
+   :toctree: _autosummary
+
+   tl.seq_denovo_seq2print
+   tl.delta_effects_seq2print
+   tl.modisco_report

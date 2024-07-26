@@ -1,29 +1,10 @@
 import argparse
-import gc
 import json
-import os.path
-import time
-from copy import deepcopy
 
-import h5py
-import numpy as np
-import pandas as pd
-import torch
-import transformers
-
-import scprinter as scp
-from scprinter.seq.dataloader import *
-from scprinter.seq.ema import EMA
-from scprinter.seq.minimum_footprint import *
-from scprinter.seq.Models import *
-from scprinter.seq.Modules import *
-from scprinter.seq.scdataloader import *
-from scprinter.utils import load_entire_hdf5, loadDispModel
+from scprinter.backup.scdataloader import *
 
 torch.backends.cudnn.benchmark = True
 
-import pickle
-import random
 import socket
 from pathlib import Path
 
@@ -47,6 +28,7 @@ parser.add_argument(
 )
 parser.add_argument("--model_dir", type=str, default="/", help="will be used to store final models")
 parser.add_argument("--enable_wandb", action="store_true", help="enable wandb")
+parser.add_argument("--project", type=str, default="scPrinterSeq_v3_lora", help="project name")
 torch.set_num_threads(4)
 args = parser.parse_args()
 config = json.load(open(args.config))
@@ -64,7 +46,7 @@ if args.enable_wandb:
     # start a new wandb run to track this script
     wandb.init(
         # set the wandb project where this run will be logged
-        project="scPrinterSeq_v3_lora",
+        project=args.project,
         notes=socket.gethostname() if "notes" not in config else config["notes"],
         # track hyperparameters and run metadata
         config=config,

@@ -17,3 +17,4 @@ This page gives an overview of scprinter API.
    chromvar
    buencolors
    utils
+   seq

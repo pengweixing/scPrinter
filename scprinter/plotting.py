@@ -669,7 +669,8 @@ def plot_footprints(
                     vmin=vmin,
                     **kwargs,
                 )
-                ax_.get_xaxis().set_visible(False)
+                if not add_ticks:
+                    ax_.get_xaxis().set_visible(False)
 
                 ax_.set_ylim(0, len(df))
                 if log_scale:

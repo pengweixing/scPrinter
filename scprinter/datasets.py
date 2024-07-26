@@ -51,6 +51,8 @@ def datasets():
                 # scp files
                 "dispersion_model_py.h5": "md5:cbd6cefed73f36aaf121aa73f2d2b658",
                 "nucleosome_model_py.pt": "md5:fc58e8698b1f869b67b2c1b7b4398b3b",
+                "TFBS_0_conv_v2.pt": "md5:2284373c8c24ac94ff874755a9e18108",
+                "TFBS_1_conv_v2.pt": "md5:c7ab928fb61641a5b6b61087db9b055f",
                 "TFBS_model_py.pt": "md5:5bd79a9c4f3374241a6f4341eb39fe2c",
                 "TFBS_model_model1_py.pt": "md5:7893684aa234df3b58995b212d9a8363",
                 # motif database
@@ -61,6 +63,8 @@ def datasets():
                 "CisBP_Human_FigR": "md5:333c0c141cc08f5e0bdf23f9eb335db7",
                 "CisBP_Mouse_FigR_Bagging": "md5:766de57df1fbdbf7e718d2c79a166d61",
                 "CisBP_Human_FigR_Bagging": "md5:8b2760490915d782c12dc1e1bda99783",
+                "CisBP_Mouse_FigR_meme": "md5:45bdeee2222db8d36182b44acb63dc80",
+                "CisBP_Human_FigR_meme": "md5:97e96fb17fc015e1d15c76609167606f",
                 # bias file
                 # "hg38Tn5Bias.h5": "md5:5ff8b43c50eb23639e3d93b5b1e8a50a",
                 "ce11Tn5Bias.tar.gz": "md5:10d8d17f94f695c06c0f66968f67b55b",
@@ -91,6 +95,9 @@ def datasets():
                 "nucleosome_model_py.pt": "https://drive.google.com/uc?export=download&id=16TVhzfSAva4um_mB0hpoOlByVlSz3Yv9",
                 "TFBS_model_py.pt": "https://drive.google.com/uc?export=download&id=1gtJIbkNEAq93s4i-WNV89lxmM-0cRotW",
                 "TFBS_model_model1_py.pt": "https://drive.google.com/uc?export=download&id=1SaY4zv_uMXyDTLDZMsAhkWU-j1WvoCrn",
+                # Sequence TFBS models:
+                "TFBS_0_conv_v2.pt": "https://drive.google.com/uc?export=download&id=1GtiKuIQ03TWppeDoGzE3rgnZ7MCS61lq",
+                "TFBS_1_conv_v2.pt": "https://drive.google.com/uc?export=download&id=1PGWdU9E41zfyIK53BFoJ89yFJPSoNkPA",
                 # motif database
                 "JASPAR2022_core_nonredundant.jaspar": "https://drive.google.com/uc?export=download&id=1YmRZ3sABLJvv9uj40BY97Rdqyodd852P",
                 "CisBP_Human.jaspar": "https://drive.google.com/uc?export=download&id=1IVcg27kxzG5TtnjqFrheGxXa-0kfAOW7",
@@ -99,6 +106,8 @@ def datasets():
                 "CisBP_Human_FigR": "https://github.com/ruochiz/FigRmotifs/raw/main/human_pfms_v4.txt",
                 "CisBP_Mouse_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/chromvar_mouse_2021_cisBP_correlationMatrix.bed",
                 "CisBP_Human_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/chromvar_human_2021_cisBP_correlationMatrix.bed",
+                "CisBP_Mouse_FigR_meme": "https://github.com/ruochiz/FigRmotifs/raw/main/mouse_pfms_v4_meme.txt",
+                "CisBP_Human_FigR_meme": "https://github.com/ruochiz/FigRmotifs/raw/main/human_pfms_v4_meme.txt",
                 # bias file
                 # "hg38Tn5Bias.h5": "https://drive.google.com/uc?export=download&confirm=s5vl&id=1Ias_dP2docuXRGcoQrGHMNOlIwhgJZoJ",
                 "ce11Tn5Bias.tar.gz": "https://zenodo.org/record/7121027/files/ce11Tn5Bias.tar.gz",
@@ -252,6 +261,9 @@ pretrained_dispersion_model = datasets().fetch(
     "dispersion_model_py.h5", processor=giverightstothegroup
 )
 
+pretrained_seq_TFBS_model0 = datasets().fetch("TFBS_0_conv_v2.pt", processor=giverightstothegroup)
+pretrained_seq_TFBS_model1 = datasets().fetch("TFBS_1_conv_v2.pt", processor=giverightstothegroup)
+
 FigR_motifs_mouse = datasets().fetch("CisBP_Mouse_FigR", processor=giverightstothegroup)
 FigR_motifs_human = datasets().fetch("CisBP_Human_FigR", processor=giverightstothegroup)
 FigR_motifs_bagging_mouse = datasets().fetch(
@@ -260,3 +272,5 @@ FigR_motifs_bagging_mouse = datasets().fetch(
 FigR_motifs_bagging_human = datasets().fetch(
     "CisBP_Human_FigR_Bagging", processor=giverightstothegroup
 )
+FigR_motifs_mouse_meme = datasets().fetch("CisBP_Mouse_FigR_meme", processor=giverightstothegroup)
+FigR_motifs_human_meme = datasets().fetch("CisBP_Human_FigR_meme", processor=giverightstothegroup)

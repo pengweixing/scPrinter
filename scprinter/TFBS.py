@@ -3,8 +3,7 @@ import time
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_MAX_THREADS"] = "1"
-from scprinter.backup.getFootprint import *
-
+from .footprint import *
 from .io import get_global_bindingscore_model, get_global_disp_models
 from .utils import *
 

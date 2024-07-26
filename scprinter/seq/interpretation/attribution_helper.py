@@ -1,15 +1,18 @@
+# Not organized yet, don't use~
+#
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
 import torch.nn.functional as F
 
-from ..utils import regionparser
-from .attribution_wrapper import *
+try:
+    from scprinter.utils import regionparser
+except:
+    from ...utils import regionparser
 from .attributions import *
 
 
-# Not organized yet, don't use~
 def multiscale_attribution(
     model,
     X,
@@ -85,19 +88,6 @@ def multiscale_ism(
         for X_0 in seqs
     ]
     return attrs
-
-
-def summary_func(logits, nth_output, specific_pos=None, reduce_mean=True):
-    scaling = InverseSigmoid()
-    logits = logits[:, nth_output]
-    logits = logits.reshape(logits.shape[0], -1)
-    if specific_pos is not None:
-        logits = logits[:, :, specific_pos]
-    if reduce_mean:
-        logits = logits - torch.mean(logits, dim=-1, keepdims=True)
-    y = scaling(logits)
-    y = y.sum(axis=-1)
-    return y
 
 
 # one sequence at a time

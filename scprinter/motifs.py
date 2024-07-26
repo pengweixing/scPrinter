@@ -889,7 +889,7 @@ def jaspar_motif_name(name):
 
 
 def cisbp_motif_name(name):
-    return name.split(" ")[1]
+    return name.split(" ")[-1]
 
 
 def FigR_Human_Motifs(genome: genome.Genome, bg, **kwargs):

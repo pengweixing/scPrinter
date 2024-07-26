@@ -72,12 +72,14 @@ class Genome:
         self.fa_file = fa_file
         self.bias_file = bias_file
         self.blacklist_file = blacklist_file
-        self.gff_file = self.fetch_gff()
-        self.fa_file = self.fetch_fa()
-        self.bias_file = self.fetch_bias()
-        self.blacklist_file = self.fetch_blacklist()
-        self.bias_bw = self.fetch_bias_bw()
-        self.gff_db = self.fetch_gff_db()
+        self.bias_bw = None
+        self.gff_db = None
+        # self.gff_file = self.fetch_gff()
+        # self.fa_file = self.fetch_fa()
+        # self.bias_file = self.fetch_bias()
+        # self.blacklist_file = self.fetch_blacklist()
+        # self.bias_bw = self.fetch_bias_bw()
+        # self.gff_db = self.fetch_gff_db()
         self.splits = splits
 
     def fetch_blacklist(self):

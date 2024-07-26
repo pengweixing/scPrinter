@@ -192,7 +192,7 @@ def count_lines(filename):
     else:
         file = open(filename, "r")
     ct = 0
-    for line in tqdm(file, desc="sampling file"):
+    for line in file:
         ct += 1
         if ct > clip:
             break

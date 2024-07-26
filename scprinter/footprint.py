@@ -8,6 +8,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_MAX_THREADS"] = "1"
 import warnings
 
+import numpy as np
+import torch
 import torch.nn.functional as F
 from scipy.ndimage import maximum_filter
 
@@ -44,24 +46,42 @@ def footprintWindowSum(
     Returns:
     dict: A dictionary containing the sum of values in the left flanking window, center window, and right flanking window.
     """
+    backend_string = "numpy" if isinstance(x, np.ndarray) else "torch"
+
     halfFlankRadius = int(flankRadius / 2)
     width = x.shape[-1]
 
     # Calculate sum of x in the left flanking window
     shift = halfFlankRadius + footprintRadius
     # x can be shape of (x) or (sample, x)
-    shapes = np.array(x.shape)
+    shapes = list(x.shape)
     shapes[-1] = shift
-    leftShifted = np.concatenate([np.zeros(shapes), x], axis=-1)
+    if backend_string == "numpy":
+        leftShifted = np.concatenate([np.zeros(shapes), x], axis=-1)
 
-    leftFlankSum = rz_conv(leftShifted, halfFlankRadius)[..., :width]
+        leftFlankSum = rz_conv(leftShifted, halfFlankRadius)[..., :width]
 
-    # Calculate sum of x in the right flanking window
-    rightShifted = np.concatenate([x, np.zeros(shapes)], axis=-1)
-    rightFlankSum = rz_conv(rightShifted, halfFlankRadius)[..., shift:]
+        # Calculate sum of x in the right flanking window
+        rightShifted = np.concatenate([x, np.zeros(shapes)], axis=-1)
+        rightFlankSum = rz_conv(rightShifted, halfFlankRadius)[..., shift:]
 
-    centerSum = rz_conv(x, footprintRadius)
-    return {"leftFlank": leftFlankSum, "center": centerSum, "rightFlank": rightFlankSum}
+        centerSum = rz_conv(x, footprintRadius)
+    else:
+        leftShifted = torch.cat([torch.zeros(shapes, device=x.device), x], dim=-1)
+        leftFlankSum = rz_conv_torch(leftShifted, halfFlankRadius)[..., :width]
+
+        # Calculate sum of x in the right flanking window
+        rightShifted = torch.cat(
+            [
+                x,
+                torch.zeros(shapes, device=x.device),
+            ],
+            dim=-1,
+        )
+        rightFlankSum = rz_conv_torch(rightShifted, halfFlankRadius)[..., shift:]
+        centerSum = rz_conv_torch(x, footprintRadius)
+
+    return leftFlankSum, centerSum, rightFlankSum
 
 
 def footprintScoring(
@@ -93,19 +113,25 @@ def footprintScoring(
     modelWeights = dispersionModel["modelWeights"]
 
     # Get sum of predicted bias in left flanking, center, and right flanking windows
-    biasWindowSums = footprintWindowSum(Tn5Bias, footprintRadius, flankRadius)
+    biasleftFlankSum, biascenterSum, biasrightFlankSum = footprintWindowSum(
+        Tn5Bias, footprintRadius, flankRadius
+    )
+    biasleftFlankSum, biascenterSum, biasrightFlankSum
 
     # Get sum of insertion counts in left flanking, center, and right flanking windows
-    insertionWindowSums = footprintWindowSum(Tn5Insertion, footprintRadius, flankRadius)
+    insertionleftFlankSum, insertioncenterSum, insertionrightFlankSum = footprintWindowSum(
+        Tn5Insertion, footprintRadius, flankRadius
+    )
+
     # print (insertionWindowSums['center'].shape, biasWindowSums['center'].shape)
-    leftTotalInsertion = insertionWindowSums["center"] + insertionWindowSums["leftFlank"]
-    rightTotalInsertion = insertionWindowSums["center"] + insertionWindowSums["rightFlank"]
+    leftTotalInsertion = insertioncenterSum + insertionleftFlankSum
+    rightTotalInsertion = insertioncenterSum + insertionrightFlankSum
     # Prepare input data (foreground features) for the dispersion model
     fgFeatures = np.stack(
         [
-            np.array([biasWindowSums["leftFlank"]] * len(Tn5Insertion)),
-            np.array([biasWindowSums["rightFlank"]] * len(Tn5Insertion)),
-            np.array([biasWindowSums["center"]] * len(Tn5Insertion)),
+            np.array([biasleftFlankSum] * len(Tn5Insertion)),
+            np.array([biasrightFlankSum] * len(Tn5Insertion)),
+            np.array([biascenterSum] * len(Tn5Insertion)),
             np.log10(leftTotalInsertion),
             np.log10(rightTotalInsertion),
         ],
@@ -132,8 +158,8 @@ def footprintScoring(
     leftPredRatioSD[leftPredRatioSD < 0] = 0
     rightPredRatioSD[rightPredRatioSD < 0] = 0
     # Calculate foreground (observed) center-vs-(center + flank) ratio
-    fgLeftRatio = insertionWindowSums["center"] / leftTotalInsertion
-    fgRightRatio = insertionWindowSums["center"] / rightTotalInsertion
+    fgLeftRatio = insertioncenterSum / leftTotalInsertion
+    fgRightRatio = insertioncenterSum / rightTotalInsertion
 
     if return_pval:
         # Compute p-value based on background mean and dispersion

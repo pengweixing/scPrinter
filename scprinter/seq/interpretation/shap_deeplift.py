@@ -8,6 +8,10 @@ from packaging import version
 from shap.explainers._explainer import Explainer
 from torch.cuda.amp import GradScaler
 
+"""
+Code adapted from DeepSHAP, but modified with custom non-linear operations
+"""
+
 
 def _check_additivity(explainer, model_output_values, output_phis):
     TOLERANCE = 1e-2
@@ -149,9 +153,13 @@ class PyTorchDeep(Explainer):
         scaler = GradScaler(enabled=self.amp)
 
         try:
-            autocast_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=self.amp)
+            autocast_context = torch.autocast(
+                device_type="cuda", dtype=torch.bfloat16, enabled=self.amp
+            )
         except RuntimeError:
-            autocast_context = torch.autocast(device_type="cuda", dtype=torch.float16, enabled=self.amp)
+            autocast_context = torch.autocast(
+                device_type="cuda", dtype=torch.float16, enabled=self.amp
+            )
         with autocast_context:
             outputs = self.model(*X)
 

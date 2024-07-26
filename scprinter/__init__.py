@@ -8,5 +8,6 @@ from . import seq
 from . import tools as tl
 from . import utils
 from .io import load_printer, scPrinter
+from .seq import Models, interpretation
 
 sys.modules.update({f"{__name__}.{m}": globals()[m] for m in ["pp", "tl", "pl"]})

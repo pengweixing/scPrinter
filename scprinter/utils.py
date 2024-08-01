@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import os
 import re
 import sys
@@ -763,3 +764,13 @@ def strided_lastaxis(a, L):
     s0, s1, s2 = a.strides
     l, m, n = a.shape
     return np.lib.stride_tricks.as_strided(a, shape=(l, m, n - L + 1, L), strides=(s0, s1, s2, s2))
+
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        return super(NumpyEncoder, self).default(obj)
+
+
+data = {"number": np.int64(42)}

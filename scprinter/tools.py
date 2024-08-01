@@ -280,7 +280,7 @@ def get_binding_score(
 
         save_path = os.path.join(printer.file_path, "%s.h5ad" % save_key) if backed else "None"
 
-        if save_key in printer.uns["binding score"] | os.path.exists(save_path):
+        if (save_key in printer.uns["binding score"]) | os.path.exists(save_path):
             # Check duplicates...
             if not overwrite:
                 print("detected %s, not allowing overwrite" % save_key)
@@ -768,7 +768,7 @@ def get_footprint_score(
         if "footprints" not in printer.uns:
             printer.uns["footprints"] = {}
 
-        if save_key in printer.uns["footprints"] | os.path.exists(save_path):
+        if (save_key in printer.uns["footprints"]) | (os.path.exists(save_path)):
             # Check duplicates...
             if not overwrite:
                 print("detected %s, not allowing overwrite" % save_key)
@@ -1166,7 +1166,7 @@ def get_insertions(
 
         if save_key is None:
             save_key = "Insertions"
-        if save_key in printer.uns["insertions"] | os.path.exists(save_path):
+        if (save_key in printer.uns["insertions"]) | (os.path.exists(save_path)):
             # Check duplicates...
             if not overwrite:
                 print("detected %s, not allowing overwrite" % save_key)
@@ -1332,7 +1332,7 @@ def seq_model_config(
         template_json[key] = additional_config[key]
     if config_save_path is not None:
         with open(config_save_path, "w") as f:
-            json.dump(template_json, f, indent=4)
+            json.dump(template_json, f, indent=4, cls=NumpyEncoder)
 
     return template_json
 
@@ -1438,12 +1438,11 @@ def seq_lora_model_config(
     model_name = model_name if model_name is not None else additional_lora_config["savename"]
     bc_path = os.path.join(printer.file_path, f"{model_name}_grp2barcodes.pkl")
     embed_path = os.path.join(printer.file_path, f"{model_name}_grp2embeddings.pkl")
-    gn_path = os.path.join(printer.file_path, f"{model_name}_group_names.pkl")
 
     template_json = copy.deepcopy(model_config)
     for key in additional_lora_config:
         template_json[key] = additional_lora_config[key]
-    template_json["save_name"] = model_name + f"_fold{fold}"
+    template_json["savename"] = model_name + f"_fold{fold}"
     if path_swap is not None:
         before, after = path_swap
         if not before.endswith(os.sep):
@@ -1454,9 +1453,8 @@ def seq_lora_model_config(
     template_json["insertion"] = insertion_path.replace(before, after)
     template_json["grp2barcodes"] = bc_path.replace(before, after)
     template_json["grp2embeddings"] = embed_path.replace(before, after)
-    template_json["grp2names"] = gn_path.replace(before, after)
     template_json["pretrain_model"] = pretrain_model.replace(before, after)
-
+    template_json["group_names"] = list(group_names)
     if (not os.path.exists(bc_path)) | overwrite_barcode:
         bc, embed, cov = [], [], []
         for barcode in cell_grouping:
@@ -1471,7 +1469,6 @@ def seq_lora_model_config(
         embed = np.concatenate([embed, cov[:, None]], axis=-1)
         pickle.dump(bc, open(bc_path, "wb"))
         pickle.dump(embed, open(embed_path, "wb"))
-        pickle.dump(group_names, open(gn_path, "wb"))
 
     default_lora_json = {
         "lora_rank": 32,
@@ -1492,15 +1489,17 @@ def seq_lora_model_config(
             template_json[key] = default_lora_json[key]
     if config_save_path is not None:
         with open(config_save_path, "w") as f:
-            json.dump(template_json, f, indent=4)
+            json.dump(template_json, f, indent=4, cls=NumpyEncoder)
     return template_json
 
 
 def seq_lora_slice_model_config(
     lora_config: dict | str,
     pretrained_lora_model,
-    finetune_group_names: list[str] | np.ndarray,
+    model_name=None,
+    finetune_group_names: list[str] | np.ndarray = [],
     additional_lora_config={},
+    path_swap=None,
     config_save_path: str | Path = None,
 ):
     """
@@ -1512,10 +1511,14 @@ def seq_lora_slice_model_config(
         The lora configuration dictionary or the path to the configuration dictionary
     pretrained_lora_model: str | Path
         The path to the pretrained lora model
+    model_name: str | None
+        The name of the model, if None, it will be the same as the pretrained model
     finetune_group_names: list[str] | np.ndarray
         The group names you want to finetune on (note that these group names have to be in the group names used to train the lora model)
     additional_lora_config: dict
         Additional configurations for the lora model
+    path_swap: tuple
+        A tuple of two strings, the first string is the string to be replaced in the path, the second string is the string to replace the first string.
     config_save_path: str | Path
         The path to save the configuration dictionary
 
@@ -1528,26 +1531,37 @@ def seq_lora_slice_model_config(
     """
     if type(lora_config) is not dict:
         lora_config = json.load(open(lora_config, "r"))
+    if model_name is None:
+        if "savename" in additional_lora_config:
+            model_name = additional_lora_config["savename"]
+        else:
+            model_name = lora_config["savename"]
+    if path_swap is not None:
+        before, after = path_swap
+        if not before.endswith(os.sep):
+            before += os.sep
+    else:
+        before, after = "", ""
 
     lora_config = copy.deepcopy(lora_config)
-    lora_config["pretrain_lora_model"] = pretrained_lora_model
-    gn_path = lora_config["grp2names"]
-    group_names = pickle.load(open(gn_path, "rb"))
+    lora_config["pretrain_lora_model"] = pretrained_lora_model.replace(before, after)
+    group_names = lora_config["group_names"]
     group_names_query = {g: i for i, g in enumerate(group_names)}
     # Now query the index of finetune_cell_grouping in cell_grouping
     cells = [group_names_query[group] for group in finetune_group_names]
     lora_config["cells"] = cells
     for key in additional_lora_config:
         lora_config[key] = additional_lora_config[key]
+    lora_config["group_names"] = finetune_group_names
+    lora_config["savename"] = model_name
     if config_save_path is not None:
         with open(config_save_path, "w") as f:
-            json.dump(lora_config, f, indent=4)
+            json.dump(lora_config, f, indent=4, cls=NumpyEncoder)
     return lora_config
 
 
 def launch_seq2print(
     model_config_path,
-    training_mode: Literal["seq2print", "lora", "lora_slice"],
     temp_dir,
     model_dir,
     data_dir,
@@ -1563,8 +1577,6 @@ def launch_seq2print(
     ----------
     model_config_path: str | Path
         The path to the model configuration dictionary, the same as the `config_save_path` when you generate the configs.
-    training_mode: Literal['seq2print', 'lora', 'lora_slice']
-        The model you are training
     temp_dir: str | Path
         The temporary directory to store the intermediate files
     model_dir: str | Path
@@ -1584,12 +1596,12 @@ def launch_seq2print(
     -------
 
     """
-    file_map = {
-        "seq2print": "seq2print_train",
-        "lora": "seq2print_lora_train",
-        "lora_slice": "seq2print_lora_slice_train",
-    }
-    entrance_script = file_map[training_mode]
+    # file_map = {
+    #     "seq2print": "seq2print_train",
+    #     "lora": "seq2print_lora_train",
+    #     "lora_slice": "seq2print_lora_slice_train",
+    # }
+    entrance_script = "seq2print_train"
     command_str = (
         f"CUDA_VISIBLE_DEVICES={gpus} {entrance_script} --config {model_config_path} --temp_dir {temp_dir} "
         f"--model_dir {model_dir} --data_dir {data_dir} --project {wandb_project}"
@@ -1675,7 +1687,7 @@ def seq_attr_seq2print(
     genome: Genome,
     region_path: str | Path,
     model_type: Literal["seq2print", "lora"],
-    model_path: str | Path,
+    model_path: str | Path | list[str | Path],
     gpus: list[int] | int,
     preset: Literal["footprint", "count", None] = None,
     method="shap_hypo",
@@ -1683,12 +1695,14 @@ def seq_attr_seq2print(
     nth_output="0-30",
     decay=0.85,
     sample=None,
+    save_norm=False,
     overwrite=False,
     lora_ids: list = None,
     lora_config: dict | str | None = None,
     group_names: list | str | None = None,
     verbose=True,
     launch=False,
+    numpy_mode=False,
 ):
     """
     Launch the sequence based attribution score calculation.
@@ -1702,7 +1716,7 @@ def seq_attr_seq2print(
     model_type: Literal['seq2print', 'lora']
         The model type
     model_path: str | Path
-        The path to the model
+        The path to the model(s)
     gpus: list[int] | int
         The gpus you want to use
     preset: Literal['footprint', 'count', None]
@@ -1717,6 +1731,8 @@ def seq_attr_seq2print(
         The decay for the sequence attributions (advanced usage)
     sample: int | None
         The number of peaks to use for the sequence attributions (downsampling the peaks to get a quick idea)
+    save_norm: bool
+        Whether to just save the normalization factor from the sampled summits
     overwrite: bool
         Whether to overwrite the existing files
     lora_ids: list | None
@@ -1729,11 +1745,37 @@ def seq_attr_seq2print(
         Verbosity of the command string
     launch: bool
         Whether to launch the command or just print the command string
+    numpy_mode: bool
+        Whether to return the numpy array of the sequence attributions instead of creating a bigwig file. This is efficient when you only have a few peaks to calculate the sequence attributions for.
 
     Returns
     -------
 
     """
+    if type(model_path) is list:
+        for m in model_path:
+            seq_attr_seq2print(
+                genome=genome,
+                region_path=region_path,
+                model_type=model_type,
+                model_path=m,
+                gpus=gpus,
+                preset=preset,
+                method=method,
+                wrapper=wrapper,
+                nth_output=nth_output,
+                decay=decay,
+                sample=sample,
+                save_norm=save_norm,
+                overwrite=overwrite,
+                lora_ids=lora_ids,
+                lora_config=lora_config,
+                group_names=group_names,
+                verbose=verbose,
+                launch=launch,
+                numpy_mode=numpy_mode,
+            )
+        return
     genome = genome.name
 
     if preset is not None:
@@ -1764,6 +1806,8 @@ def seq_attr_seq2print(
     )
     if overwrite:
         command += " --overwrite "
+    if numpy_mode:
+        command += " --write_numpy "
     if model_type == "lora":
         if lora_ids is None:
             assert (
@@ -1775,8 +1819,7 @@ def seq_attr_seq2print(
             if lora_config is not None:
                 if type(lora_config) is not dict:
                     lora_config = json.load(open(lora_config, "r"))
-            gn_path = lora_config["grp2names"]
-            group_names_all = pickle.load(open(gn_path, "rb"))
+            group_names_all = lora_config["group_names"]
             group_names_query = {g: i for i, g in enumerate(group_names_all)}
             # Now query the index of finetune_cell_grouping in cell_grouping
             lora_ids = [group_names_query[group] for group in group_names]
@@ -1787,7 +1830,10 @@ def seq_attr_seq2print(
     if sample is not None:
         command += f" --sample {sample}"
     if not verbose:
-        command += " --silent"
+        command += " --silent "
+    if save_norm:
+        command += " --save_norm "
+
     if verbose:
         if launch:
             print(launch_template)
@@ -1797,22 +1843,24 @@ def seq_attr_seq2print(
     if launch:
         os.system(command)
 
-    if not sample:
+    if not save_norm:
         if model_type == "seq2print":
             return os.path.join(
-                f"{model_path}_deepshap", f"hypo.{wrapper}.{method}_{nth_output}_.{decay}.npz"
+                f"{model_path}_deepshap" + (f"_sample{sample}" if sample is not None else ""),
+                f"hypo.{wrapper}.{method}_{nth_output}_.{decay}.npz",
             )
         else:
             return [
                 os.path.join(
-                    f"{model_path}_deepshap",
+                    f"{model_path}_deepshap" + (f"_sample{sample}" if sample is not None else ""),
                     f"model_{id}.hypo.{wrapper}.{method}_{nth_output}_.{decay}.npz",
                 )
                 for id in lora_ids
             ]
     else:
         return os.path.join(
-            f"{model_path}_deepshap", f"norm.{wrapper}.{method}_{nth_output}_.{decay}.npy"
+            f"{model_path}_deepshap" + (f"_sample{sample}" if sample is not None else ""),
+            f"norm.{wrapper}.{method}_{nth_output}_.{decay}.npy",
         )
 
 
@@ -1826,9 +1874,12 @@ def seq_tfbs_seq2print(
     model_path: str | Path | None | list = None,
     lora_config: dict | str | None = None,
     group_names: list | str | None = None,
-    overwrite: bool = False,
+    save_path: str | Path = None,
+    overwrite_seqattr=False,
     verbose: bool = True,
     launch: bool = False,
+    return_adata=False,
+    save_key=None,
 ):
     """
     Launch the sequence based TF binding score calculation, will automatically locate the seq_attr_count and seq_attr_footprint if not provided
@@ -1854,13 +1905,18 @@ def seq_tfbs_seq2print(
         The lora configuration dictionary or the path to the configuration dictionary, must be provided when model_type is lora
     group_names: list | str | None
         The group names, will be used to save the TF binding scores
-    overwrite: bool
-        Whether to overwrite the existing files
+    save_path: str | Path
+        The path to save the TF binding scores
+    overwrite_seqattr: bool
+        Whether to overwrite the existing seqattr files (If you change the regions but reuse the same grouping, set this as True)
     verbose: bool
         The command strings will always be printed, this controls whether to print additional information.
     launch: bool
         Whether to launch the training script or just print the command string (and you can copy and paste to run it yourself)
-
+    return_adata: bool
+        Summarize the TFBS in an adata format that's similar to the footprints / tfbs scores
+    save_key: str | None
+        The name of the collection (used for LoRA, name the whole set), if None, will be some random strings
 
     Returns
     -------
@@ -1873,21 +1929,29 @@ def seq_tfbs_seq2print(
         gpus = [gpus]
     if type(group_names) not in [np.ndarray, list]:
         group_names = [group_names]
-
+    if return_adata:
+        assert save_key is not None, "Please provide the save_key if you are using return_adata"
+        assert launch is True, "Please set launch as True if you are using return_adata"
     if model_type == "lora":
         assert group_names is not None, "Please provide the lora_ids if you are using lora model"
         assert (seq_attr_count is None) and (
             seq_attr_footprint is None
         ), "Both seq_attr_count and seq_attr_footprint should be None if you are using lora model"
-        gn_path = lora_config["grp2names"]
-        group_names_all = pickle.load(open(gn_path, "rb"))
+
+        group_names_all = lora_config["group_names"]
         group_names_query = {g: i for i, g in enumerate(group_names_all)}
         # Now query the index of finetune_cell_grouping in cell_grouping
         lora_ids = [group_names_query[group] for group in group_names]
     else:
         lora_ids = [None]
+    if type(seq_attr_count) in [str, Path]:
+        seq_attr_count = [seq_attr_count]
+    if type(seq_attr_footprint) in [str, Path]:
+        seq_attr_footprint = [seq_attr_footprint]
 
     seq_attrs_all = []
+    all_pass = True
+    read_numpy = False
     for seq_attr, template, kind in zip(
         [seq_attr_count, seq_attr_footprint],
         ["attr.count.shap_hypo_0_.0.85.bigwig", "attr.just_sum.shap_hypo_0-30_.0.85.bigwig"],
@@ -1901,62 +1965,109 @@ def seq_tfbs_seq2print(
             if type(model_path) is not list:
                 model_path = [model_path]
             seq_attr = []
+
             for id in lora_ids:
-                seq_attr_one_group = []
                 for model in model_path:
                     seq_attr_path = os.path.join(
                         f"{model}_deepshap",
                         f"model_{id}." + template if id is not None else template,
                     )
-                    seq_attr_one_group.append(seq_attr_path)
-                    if not os.path.exists(seq_attr_path):
+                    seq_attr_path_npz = seq_attr_path.replace(".bigwig", ".npz")
+                    if os.path.exists(seq_attr_path_npz):
+                        read_numpy = True
+
+                    if (not os.path.exists(seq_attr_path)) and (
+                        not os.path.exists(seq_attr_path_npz)
+                    ):
+                        if verbose:
+                            print(f"{seq_attr_path} file does not exist")
+                        all_pass = False
                         seq_attr_seq2print(
-                            region_path,
-                            model_type,
-                            model,
-                            genome,
-                            gpus,
+                            region_path=region_path,
+                            model_type=model_type,
+                            model_path=model,
+                            genome=genome,
+                            gpus=gpus,
                             preset=kind,
-                            overwrite=overwrite,
-                            verbose=verbose,
+                            overwrite=overwrite_seqattr,
+                            verbose=False,
                             lora_ids=lora_ids,
                             launch=launch,
+                            numpy_mode=return_adata,
                         )
-                seq_attr.append(seq_attr_one_group)
+                        if return_adata:
+                            read_numpy = True
+
+            seq_attr.append(
+                os.path.join(
+                    f"{model}_deepshap",
+                    "model_{lora_id}." + template if id is not None else template,
+                )
+            )
+        else:
+            if ".npz" in seq_attr[0]:
+                read_numpy = True
+        if read_numpy:
+            seq_attr = [x.replace(".bigwig", ".npz") for x in seq_attr]
         seq_attrs_all.append(seq_attr)
 
-    seq_attr_count, seq_attr_footprint = seq_attrs_all
-    all_pass = True
-    for count, foot in zip(seq_attr_count, seq_attr_footprint):
-        for file in count + foot:
-            if not os.path.exists(file):
-                if verbose:
-                    print(f"{file} file does not exist")
-                all_pass = False
     if not all_pass:
         return
 
-    for count, foot, save_name in zip(seq_attr_count, seq_attr_footprint, group_names):
-        count = " ".join(count)
-        foot = " ".join(foot)
-        count_pt = pretrained_seq_TFBS_model0
-        foot_pt = pretrained_seq_TFBS_model1
-        command = (
-            f"seq2print_tfbs --count_pt {count_pt} --foot_pt {foot_pt} "
-            f"--seq_count {count} --seq_foot {foot} --genome {genome.name} "
-            f"--peaks {region_path} --save_name {save_name} --gpus {gpus[0]}"
-        )
-        if overwrite:
-            command += " --overwrite "
+    count, foot = seq_attrs_all
+    count = " ".join(count)
+    foot = " ".join(foot)
+    count_pt = pretrained_seq_TFBS_model0
+    foot_pt = pretrained_seq_TFBS_model1
+    save_name = ",".join([os.path.join(save_path, str(x)) for x in group_names])
+    gpus = " ".join([str(x) for x in gpus])
+    command = (
+        f"seq2print_tfbs --count_pt {count_pt} --foot_pt {foot_pt} "
+        f"--seq_count {count} --seq_foot {foot} --genome {genome.name} "
+        f"--peaks {region_path} --save_name {save_name} --gpus {gpus}"
+    )
+    if lora_ids[0] is not None:
+        lora_ids_str = ",".join([str(x) for x in lora_ids])
+        command += f" --lora_ids {lora_ids_str}"
 
-        if verbose:
-            if launch:
-                print(launch_template)
-            else:
-                print(verbose_template)
-        print(command)
+    if return_adata:
+        command += " --write_numpy "
+    if save_key is not None:
+        save_key = os.path.join(save_path, save_key)
+        command += f" --collection_name {save_key}"
+    if read_numpy:
+        command += " --read_numpy "
+    if verbose:
         if launch:
-            os.system(command)
+            print(launch_template)
+        else:
+            print(verbose_template)
+    print(command)
+    if launch:
+        os.system(command)
+
+    if return_adata:
+        regions = regionparser(region_path, printer=None, width=800)
+        region_identifiers = df2regionidentifier(regions)
+        results = np.load(f"{save_key}TFBS.npz")["tfbs"]
+
+        print("obs=groups, var=regions")
+        df_obs = pd.DataFrame({"name": group_names, "id": lora_ids})
+        df_obs.index = group_names
+        df_var = regions
+        df_var["identifier"] = region_identifiers
+        df_var.index = region_identifiers
+
+        adata_params = {
+            "X": csr_matrix((len(group_names), len(regions))),
+            "obs": df_obs,
+            "var": df_var,
+        }
+
+        adata = anndata.AnnData(**adata_params)
+        for i, region_identifier in enumerate(region_identifiers):
+            adata.obsm[region_identifier] = results[:, i]
+        return adata
 
 
 def seq_denovo_seq2print(
@@ -2019,9 +2130,9 @@ def seq_denovo_seq2print(
         seq_attr_path = os.path.join(
             f"{model}_deepshap",
             (
-                "attr.count.shap_hypo_0_.0.85.bigwig"
+                "hypo.count.shap_hypo_0_.0.85.npz"
                 if preset == "count"
-                else "attr.just_sum.shap_hypo_0-30_.0.85.bigwig"
+                else "hypo.just_sum.shap_hypo_0-30_.0.85.npz"
             ),
         )
         seq_attrs.append(seq_attr_path)
@@ -2040,17 +2151,63 @@ def seq_denovo_seq2print(
             verbose=verbose,
             launch=launch,
         )
-
     if not os.path.exists(save_path) | overwrite:
         modisco_helper(
-            ohe_path,
-            seq_attrs,
-            save_path,
+            ohe=ohe_path,
+            hypo=seq_attrs,
+            output=save_path,
             verbose=verbose,
             n=n_seqlets,
             w=modisco_window,
             launch=launch,
         )
+
+
+def seq_denovo_callhits(
+    modisco_output: str | Path,
+    model_path: str | Path | list[str] | list[Path],
+    region_path: str | Path,
+    device="cuda:0",
+    preset: Literal["footprint", "count"] = "footprint",
+    save_path: str | Path = None,
+    verbose=False,
+    launch=False,
+    return_hits=True,
+):
+    ohe_path = f"{region_path}_ohe.npz"
+    if type(model_path) is not list:
+        model_path = [model_path]
+    seq_attrs = []
+    for model in model_path:
+        seq_attr_path = os.path.join(
+            f"{model}_deepshap",
+            (
+                "hypo.count.shap_hypo_0_.0.85.npz"
+                if preset == "count"
+                else "hypo.just_sum.shap_hypo_0-30_.0.85.npz"
+            ),
+        )
+        seq_attrs.append(seq_attr_path)
+    seq_attr = seq_attrs[0] if len(seq_attrs) == 1 else modisco_output + ".avg.hypo.npz"
+
+    command1 = (
+        f"finemo extract-regions-modisco-fmt -s {ohe_path} -a {seq_attr} -o {save_path}.finemo.npz"
+    )
+    command2 = f"finemo call-hits -M pp -r {save_path}.finemo.npz -m {modisco_output} -o {save_path} -d {device}"
+    if verbose:
+        if launch:
+            print(launch_template)
+        else:
+            print(verbose_template)
+    print(command1)
+    if launch:
+        os.system(command1)
+    print(command2)
+    if launch:
+        os.system(command2)
+    if return_hits:
+        hits = pd.read_csv(f"{save_path}/hits.tsv", sep="\t", header=None)
+        return hits
 
 
 def modisco_helper(
@@ -2068,11 +2225,12 @@ def modisco_helper(
     if type(hypo) is not list:
         hypo = [hypo]
     if len(hypo) > 1:
-        hypo = output + ".avg.hypo.npz"
-        if not os.path.exists(hypo) | overwrite_avg_hypo:
+        hypo_path = output + ".avg.hypo.npz"
+        if not os.path.exists(hypo_path) | overwrite_avg_hypo:
             new_hypo = [np.load(h)["arr_0"] for h in hypo]
             new_hypo = np.array(new_hypo).mean(axis=0)
-            np.savez(hypo, new_hypo)
+            np.savez(hypo_path, new_hypo)
+        hypo = hypo_path
     else:
         hypo = hypo[0]
     command = f"modisco motifs -s {ohe} -a {hypo} -n {n} -o {output} -w {w}"

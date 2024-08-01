@@ -20,6 +20,76 @@ from scprinter.utils import loadDispModel
 torch.backends.cudnn.benchmark = True
 
 
+def construct_model_from_config(config):
+    n_filters = config["n_filters"]
+    n_layers = config["n_layers"]
+    activation = config["activation"]
+    head_kernel_size = config["head_kernel_size"]
+    kernel_size = config["kernel_size"]
+    if activation == "relu":
+        activation = torch.nn.ReLU()
+    elif activation == "gelu":
+        activation = torch.nn.GELU()
+    batch_norm = config["batch_norm"]
+    dilation_base = config["dilation_base"]
+    bottleneck_factor = config["bottleneck_factor"]
+    bottleneck = int(n_filters * bottleneck_factor)
+    rezero = config["rezero"]
+    batch_norm_momentum = config["batch_norm_momentum"]
+    groups = config["groups"]
+    no_inception = config["no_inception"]
+    n_inception_layers = config["n_inception_layers"]
+    inception_layers_after = config["inception_layers_after"]
+    if no_inception:
+        n_inception_layers = 0
+
+    inception_version = config["inception_version"]
+    if inception_layers_after:
+        inception_bool = [False] * (n_layers - n_inception_layers) + [True] * (n_inception_layers)
+    else:
+        inception_bool = [True] * n_inception_layers + [False] * (n_layers - n_inception_layers)
+
+    acc_dna_cnn = DNA_CNN(
+        n_filters=n_filters,
+    )
+    dilation_func = lambda x: 2 ** (x + dilation_base)
+    acc_hidden = DilatedCNN(
+        n_filters=n_filters,
+        bottleneck=bottleneck,
+        n_layers=n_layers,
+        kernel_size=kernel_size,
+        groups=groups,
+        activation=activation,
+        batch_norm=batch_norm,
+        residual=True,
+        rezero=rezero,
+        dilation_func=dilation_func,
+        batch_norm_momentum=batch_norm_momentum,
+        inception=inception_bool,
+        inception_version=inception_version,
+    )
+
+    acc_head = Footprints_head(
+        n_filters,
+        kernel_size=head_kernel_size,
+        n_scales=99,
+    )
+    output_len = 800
+    dna_len = output_len + acc_dna_cnn.conv.weight.shape[2] - 1
+    for i in range(n_layers):
+        dna_len = dna_len + 2 * (kernel_size // 2) * dilation_func(i)
+    print("dna_len", dna_len)
+
+    acc_model = seq2PRINT(
+        dna_cnn_model=acc_dna_cnn,
+        hidden_layer_model=acc_hidden,
+        profile_cnn_model=acc_head,
+        dna_len=dna_len,
+        output_len=output_len,
+    )
+    return acc_model, dna_len, output_len
+
+
 def entry(config=None, wandb_run_name="", enable_wandb=True):
     # Initialize a new wandb run
     print("start a new run!!!")
@@ -39,12 +109,30 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
 
     split = config["split"]
     peaks = os.path.join(data_dir, config["peaks"])
+    lora_mode = False
 
-    insertion = os.path.join(data_dir, config["insertion"])
-    grp2barcodes = os.path.join(data_dir, config["grp2barcodes"])
-    grp2embeddings = os.path.join(data_dir, config["grp2embeddings"])
-    pretrain_model = os.path.join(data_dir, config["pretrain_model"])
-    # coverages = os.path.join(data_dir, config["coverages"])
+    if "cells" in config:
+        cells_of_interest = np.array(config["cells"])
+        pretrain_lora_model = os.path.join(data_dir, config["pretrain_lora_model"])
+    else:
+        cells_of_interest = None
+        pretrain_lora_model = None
+
+    if "pretrain_model" in config:
+        pretrain_model = os.path.join(data_dir, config["pretrain_model"])
+        insertion = os.path.join(data_dir, config["insertion"])
+        grp2barcodes = os.path.join(data_dir, config["grp2barcodes"])
+        grp2embeddings = os.path.join(data_dir, config["grp2embeddings"])
+        cell_sample = config["cell_sample"]
+        insertion = pickle.load(open(insertion, "rb"))
+        grp2barcodes = np.array(pickle.load(open(grp2barcodes, "rb")), dtype="object")
+        grp2embeddings = np.array(pickle.load(open(grp2embeddings, "rb")))
+        if cells_of_interest is not None:
+            grp2barcodes = grp2barcodes[cells_of_interest]
+            grp2embeddings = grp2embeddings[cells_of_interest]
+        lora_mode = True
+    else:
+        pretrain_model = None
 
     peaks = pd.read_table(peaks, sep="\t", header=None)
     summits = peaks
@@ -54,10 +142,6 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
     summits["index"] = np.arange(len(summits))
     print(summits)
     modes = np.arange(2, 101, 1)
-    insertion = pickle.load(open(insertion, "rb"))
-    grp2barcodes = np.array(pickle.load(open(grp2barcodes, "rb")), dtype="object")
-    grp2embeddings = np.array(pickle.load(open(grp2embeddings, "rb")))
-    print(grp2embeddings)
 
     max_jitter = config["max_jitter"]
     ema_flag = config["ema"]
@@ -65,7 +149,11 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
     batch_size = config["batch_size"]
     weight_decay = config["weight_decay"]
     genome = config["genome"]
-    cell_sample = config["cell_sample"]
+    if "accumulate_grad_batches" in config:
+        accumulate_grad = config["accumulate_grad_batches"]
+    else:
+        accumulate_grad = 1
+
     if genome == "hg38":
         genome = scp.genome.hg38
     elif genome == "mm10":
@@ -74,10 +162,17 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         raise ValueError("genome not supported")
 
     lr = config["lr"]
-    acc_model = torch.load(pretrain_model)
+    if lora_mode:
+        acc_model = torch.load(pretrain_model)
+    else:
+        acc_model, dna_len, output_len = construct_model_from_config(config)
+        acc_model.dna_len = dna_len
+        acc_model.signal_len = output_len
+
     acc_model.cuda()
-    for p in acc_model.parameters():
-        p.requires_grad = False
+    if lora_mode:
+        for p in acc_model.parameters():
+            p.requires_grad = False
     # acc_model.profile_cnn_model.conv_layer.weight.requires_grad = True
     # acc_model.profile_cnn_model.conv_layer.bias.requires_grad = True
     # acc_model.profile_cnn_model.linear.weight.requires_grad = True
@@ -91,59 +186,88 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
     print("output len", acc_model.output_len)
     print("dna len", acc_model.dna_len)
 
-    # if os.path.exists(coverages):
-    #     cov = pickle.load(open(coverages, "rb"))
-    #     save_coverage = False
-    # else:
-    #     cov = {k: None for k in split}
-    #     save_coverage = True
-    save_coverage = False
     cov = {k: None for k in split}
-    datasets = {
-        k: scseq2PRINTDataset(
-            insertion_dict=insertion,
-            bias=str(genome.fetch_bias())[:-3] + ".bw",
-            group2idx=grp2barcodes,
-            ref_seq=genome.fetch_fa(),
-            summits=summits[summits[0].isin(split[k])],
-            DNA_window=acc_model.dna_len,
-            signal_window=acc_model.output_len + 200,
-            max_jitter=max_jitter if k in ["train"] else 0,
-            cached=True,
-            lazy_cache=True,
-            reverse_compliment=(config["reverse_compliment"] if k in ["train"] else False),
-            device="cpu",
-            coverages=cov[k],
-            data_augmentation=True if k in ["train"] else False,
-            mode=config["dataloader_mode"] if k in ["train"] else "uniform",
-            cell_sample=cell_sample,
-        )
-        for k in split
-    }
+    if not lora_mode:
+        signals = os.path.join(data_dir, config["signals"])
+        bias = str(genome.fetch_bias())[:-3] + ".bw"
+        signals = [signals, bias]
+        datasets = {
+            k: seq2PRINTDataset(
+                signals=signals,
+                ref_seq=genome.fetch_fa(),
+                summits=summits[summits[0].isin(split[k])],
+                DNA_window=dna_len,
+                signal_window=output_len + 200,
+                max_jitter=max_jitter if k in ["train"] else 0,
+                min_counts=None,
+                max_counts=None,
+                cached=True,
+                lazy_cache=True,
+                reverse_compliment=(config["reverse_compliment"] if k in ["train"] else False),
+                device="cpu",
+            )
+            for k in split
+        }
 
-    # if save_coverage:
-    #     cov = {k: datasets[k].coverages for k in split}
-    #     pickle.dump(cov, open(coverages, "wb"))
+        coverage = datasets["train"].coverage
 
-    dataloader = {
-        k: seq2PRINTDataLoader(
-            dataset=datasets[k],
-            batch_size=(
-                (batch_size // cell_sample) * 2
-                if (config["dataloader_mode"] == "peak") and (k in ["train"])
-                else batch_size
-            ),
-            num_workers=4,
-            pin_memory=True,
-            shuffle=True,
-            collate_fn=(
-                collate_fn_singlecell
-                if (config["dataloader_mode"] == "peak") and (k in ["train"])
-                else None
-            ),
-        )
-        for k in split
-    }
+        min_, max_ = np.quantile(coverage, 0.0001), np.quantile(coverage, 0.9999)
+        min_ = max(min_, 10)
+        print("coverage cutoff", min_, max_)
+        for k in split:
+            datasets[k].filter_by_coverage(min_, max_)
+        dataloader = {
+            k: seq2PRINTDataLoader(
+                dataset=datasets[k],
+                batch_size=batch_size,
+                num_workers=4,
+                pin_memory=True,
+                shuffle=True,
+            )
+            for k in split
+        }
+    else:
+
+        datasets = {
+            k: scseq2PRINTDataset(
+                insertion_dict=insertion,
+                bias=str(genome.fetch_bias())[:-3] + ".bw",
+                group2idx=grp2barcodes,
+                ref_seq=genome.fetch_fa(),
+                summits=summits[summits[0].isin(split[k])],
+                DNA_window=acc_model.dna_len,
+                signal_window=acc_model.output_len + 200,
+                max_jitter=max_jitter if k in ["train"] else 0,
+                cached=True,
+                lazy_cache=True,
+                reverse_compliment=(config["reverse_compliment"] if k in ["train"] else False),
+                device="cpu",
+                coverages=cov[k],
+                data_augmentation=True if k in ["train"] else False,
+                mode=config["dataloader_mode"] if k in ["train"] else "uniform",
+                cell_sample=cell_sample,
+            )
+            for k in split
+        }
+        dataloader = {
+            k: seq2PRINTDataLoader(
+                dataset=datasets[k],
+                batch_size=(
+                    (batch_size // cell_sample) * 2
+                    if (config["dataloader_mode"] == "peak") and (k in ["train"])
+                    else batch_size
+                ),
+                num_workers=4,
+                pin_memory=True,
+                shuffle=True,
+                collate_fn=(
+                    collate_fn_singlecell
+                    if (config["dataloader_mode"] == "peak") and (k in ["train"])
+                    else None
+                ),
+            )
+            for k in split
+        }
 
     val_loss, profile_pearson, across_pearson_fp, across_pearson_cov = validation_step_footprint(
         acc_model,
@@ -152,7 +276,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         dispmodel,
         modes,
     )
-    print("before lora", val_loss, profile_pearson, across_pearson_fp, across_pearson_cov)
+    print("before training", val_loss, profile_pearson, across_pearson_fp, across_pearson_cov)
     # optimizer = torch.optim.AdamW(acc_model.parameters(), lr=1e-3, weight_decay=weight_decay)
     # if "scheduler" in config:
     #     scheduler = config["scheduler"]
@@ -213,25 +337,131 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
     #
     # for p in acc_model.parameters():
     #     p.requires_grad = False
+    if pretrain_model is not None:
+        acc_model = acc_model.cpu()
+        acc_model = seq2PRINT(
+            dna_cnn_model=acc_model.dna_cnn_model,
+            hidden_layer_model=acc_model.hidden_layer_model,
+            profile_cnn_model=acc_model.profile_cnn_model,
+            dna_len=acc_model.dna_len,
+            output_len=acc_model.output_len,
+            embeddings=grp2embeddings,
+            rank=config["lora_rank"],
+            hidden_dim=config["lora_hidden_dim"],
+            lora_dna_cnn=config["lora_dna_cnn"],
+            lora_dilated_cnn=config["lora_dilated_cnn"],
+            lora_pff_cnn=config["lora_pff_cnn"],
+            lora_profile_cnn=config["lora_profile_cnn"],
+            lora_count_cnn=config["lora_count_cnn"],
+            n_lora_layers=config["n_lora_layers"],
+        )
+        acc_model = acc_model.cuda()
 
-    acc_model = acc_model.cpu()
-    acc_model = seq2PRINT(
-        dna_cnn_model=acc_model.dna_cnn_model,
-        hidden_layer_model=acc_model.hidden_layer_model,
-        profile_cnn_model=acc_model.profile_cnn_model,
-        dna_len=acc_model.dna_len,
-        output_len=acc_model.output_len,
-        embeddings=grp2embeddings,
-        rank=config["lora_rank"],
-        hidden_dim=config["lora_hidden_dim"],
-        lora_dna_cnn=config["lora_dna_cnn"],
-        lora_dilated_cnn=config["lora_dilated_cnn"],
-        lora_pff_cnn=config["lora_pff_cnn"],
-        lora_profile_cnn=config["lora_profile_cnn"],
-        lora_count_cnn=config["lora_count_cnn"],
-        n_lora_layers=config["n_lora_layers"],
-    )
-    acc_model = acc_model.cuda()
+    if pretrain_lora_model is not None:
+        pretrain_lora_model = torch.load(pretrain_lora_model, map_location="cpu")
+        if isinstance(acc_model.profile_cnn_model, Footprints_head):
+            acc_model.profile_cnn_model.conv_layer.layer.load_state_dict(
+                pretrain_lora_model.profile_cnn_model.conv_layer.layer.state_dict()
+            )
+            acc_model.profile_cnn_model.linear.layer.load_state_dict(
+                pretrain_lora_model.profile_cnn_model.linear.layer.state_dict()
+            )
+        elif isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead):
+            acc_model.profile_cnn_model.adjustment_footprint.load_state_dict(
+                pretrain_lora_model.profile_cnn_model.adjustment_footprint.state_dict()
+            )
+            acc_model.profile_cnn_model.adjustment_count.load_state_dict(
+                pretrain_lora_model.profile_cnn_model.adjustment_count.state_dict()
+            )
+
+            acc_model.profile_cnn_model.footprints_head.conv_layer.layer.load_state_dict(
+                pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer.layer.state_dict()
+            )
+            acc_model.profile_cnn_model.footprints_head.linear.layer.load_state_dict(
+                pretrain_lora_model.profile_cnn_model.footprints_head.linear.layer.state_dict()
+            )
+        else:
+            print("profile cnn model not supported", type(acc_model.profile_cnn_model))
+        #
+        # acc_model.profile_cnn_model.adjustment_footprint.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.adjustment_footprint.state_dict()
+        # )
+        # acc_model.profile_cnn_model.adjustment_count.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.adjustment_count.state_dict()
+        # )
+        #
+        # acc_model.profile_cnn_model.footprints_head.conv_layer.layer.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer.layer.state_dict()
+        # )
+        # acc_model.profile_cnn_model.footprints_head.linear.layer.load_state_dict(
+        #     pretrain_lora_model.profile_cnn_model.footprints_head.linear.layer.state_dict()
+        # )
+
+        for flag, module, pretrain_module in [
+            (
+                config["lora_dna_cnn"],
+                [acc_model.dna_cnn_model.conv],
+                [pretrain_lora_model.dna_cnn_model.conv],
+            ),
+            (
+                config["lora_dilated_cnn"],
+                [l.module.conv1 for l in acc_model.hidden_layer_model.layers],
+                [l.module.conv1 for l in pretrain_lora_model.hidden_layer_model.layers],
+            ),
+            (
+                config["lora_pff_cnn"],
+                [l.module.conv2 for l in acc_model.hidden_layer_model.layers],
+                [l.module.conv2 for l in pretrain_lora_model.hidden_layer_model.layers],
+            ),
+            (
+                config["lora_profile_cnn"],
+                [
+                    (
+                        acc_model.profile_cnn_model.footprints_head.conv_layer
+                        if isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead)
+                        else acc_model.profile_cnn_model.conv_layer
+                    )
+                ],
+                [
+                    (
+                        pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer
+                        if isinstance(
+                            pretrain_lora_model.profile_cnn_model, BiasAdjustedFootprintsHead
+                        )
+                        else pretrain_lora_model.profile_cnn_model.conv_layer
+                    )
+                ],
+            ),
+            (
+                config["lora_count_cnn"],
+                [
+                    (
+                        acc_model.profile_cnn_model.footprints_head.linear
+                        if isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead)
+                        else acc_model.profile_cnn_model.linear
+                    )
+                ],
+                [
+                    (
+                        pretrain_lora_model.profile_cnn_model.footprints_head.linear
+                        if isinstance(
+                            pretrain_lora_model.profile_cnn_model, BiasAdjustedFootprintsHead
+                        )
+                        else pretrain_lora_model.profile_cnn_model.linear
+                    )
+                ],
+            ),
+        ]:
+            if flag:
+                for m, prem in zip(module, pretrain_module):
+                    for i in range(len(m.A_embedding)):
+                        if not isinstance(m.A_embedding[i], nn.Embedding):
+                            m.A_embedding[i].load_state_dict(prem.A_embedding[i].state_dict())
+                    for i in range(len(m.B_embedding)):
+                        if not isinstance(m.B_embedding[i], nn.Embedding):
+                            m.B_embedding[i].load_state_dict(prem.B_embedding[i].state_dict())
+
+        acc_model.cuda()
 
     print("model")
     print(acc_model)
@@ -271,7 +501,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         dispmodel,
         modes,
     )
-    print("before lora", val_loss, profile_pearson, across_pearson_fp, across_pearson_cov)
+    print("before training", val_loss, profile_pearson, across_pearson_fp, across_pearson_cov)
     # raise EOFError
     acc_model.fit(
         dispmodel,
@@ -290,15 +520,18 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         ema=ema,
         use_amp=amp_flag,
         use_wandb=enable_wandb,
-        accumulate_grad=config["accumulate_grad_batches"],
+        accumulate_grad=accumulate_grad,
         batch_size=batch_size,
-        coverage_warming=1,
+        coverage_warming=10 if lora_mode else 0,
     )
     if ema:
         del acc_model
         acc_model = torch.load(f"{temp_dir}/{wandb_run_name}.ema_model.pt").cuda()
     acc_model.eval()
     savename = config["savename"]
+    acc_model.count_norm = [0, 0, 1]
+    acc_model.foot_norm = [0, 0, 1]
+
     torch.save(acc_model, f"{model_dir}/{savename}-{wandb_run_name}.pt")
     val_loss, profile_pearson, across_pearson_fp, across_pearson_cov = validation_step_footprint(
         acc_model,
@@ -317,37 +550,53 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
             modes,
         )
     )
+    acc_model = acc_model.cpu()
+    del acc_model
+    if ema:
+        del ema
+    torch.cuda.empty_cache()
+    gc.collect()
+
     # Now that the model is trained we use it to estimate the normalization range of the shap values
     # For LoRA model the tricky part is that we also need to sample across multiple cells.
     model_type = "lora"
     model = f"{model_dir}/{savename}-{wandb_run_name}.pt"
     gpus = [0]
     peak_file = os.path.join(data_dir, config["peaks"])
-    num_cell = len(grp2barcodes)
+    if lora_mode:
+        num_cell = len(grp2barcodes)
+    else:
+        num_cell = 1
+    sample_num = 30000
     count_hypo = scp.tl.seq_attr_seq2print(
-        peak_file,
-        model_type,
-        model,
-        genome,
-        gpus,
+        region_path=peak_file,
+        model_type=model_type,
+        model_path=model,
+        genome=genome,
+        gpus=gpus,
         preset="count",
-        sample=max(50000 // num_cell, 2),
+        sample=max(sample_num // num_cell, 2),
+        save_norm=True,
         overwrite=True,
+        verbose=True,
         launch=True,
         lora_ids=list(np.arange(num_cell)),
     )
     foot_hypo = scp.tl.seq_attr_seq2print(
-        peak_file,
-        model_type,
-        model,
-        genome,
-        gpus,
+        region_path=peak_file,
+        model_type=model_type,
+        model_path=model,
+        genome=genome,
+        gpus=gpus,
         preset="footprint",
-        sample=max(50000 // num_cell, 2),
+        sample=max(sample_num // num_cell, 2),
+        save_norm=True,
         overwrite=True,
+        verbose=True,
         launch=True,
         lora_ids=list(np.arange(num_cell)),
     )
+    acc_model = torch.load(f"{model_dir}/{savename}-{wandb_run_name}.pt", map_location="cpu")
     count_hypo = np.load(count_hypo)
     foot_hypo = np.load(foot_hypo)
     low, median, high = count_hypo
@@ -357,7 +606,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
     print("footprint head normalization factor", low, median, high)
     acc_model.foot_norm = [low, median, high]
     torch.save(acc_model, f"{model_dir}/{savename}-{wandb_run_name}.pt")
-    shutil.rmtree(f"{model_dir}/{savename}-{wandb_run_name}.pt_deepshap")
+    # shutil.rmtree(f"{model_dir}/{savename}-{wandb_run_name}.pt_deepshap")
 
     if enable_wandb:
         wandb.summary["final_valid_loss"] = val_loss
@@ -375,7 +624,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="seq2PRINT LoRA model")
+    parser = argparse.ArgumentParser(description="seq2PRINT (LoRA) model")
     parser.add_argument("--config", type=str, default="config.JSON", help="config file")
     parser.add_argument(
         "--data_dir",

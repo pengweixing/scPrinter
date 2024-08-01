@@ -672,7 +672,7 @@ class seq2PRINT(nn.Module):
                         ema.ema_model, validation_data, validation_size, dispmodel, modes
                     )
                 )
-                if val_loss_ema > val_loss:
+                if (val_loss_ema > val_loss) | (epoch < coverage_warming):
                     # ema not converged yet:
                     early_stopping_counter = 0
 

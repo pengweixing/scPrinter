@@ -1,4 +1,9 @@
 import argparse
+import subprocess
+from concurrent.futures import ProcessPoolExecutor
+
+import numpy as np
+import torch
 
 import scprinter as scp
 from scprinter.seq.dataloader import *
@@ -6,8 +11,71 @@ from scprinter.seq.interpretation.attributions import *
 from scprinter.seq.Models import *
 
 
+def forward_pass_model(feats, model):
+    feats = torch.as_tensor(feats).float().cuda()[:, None, :]
+    feats_rev = torch.flip(feats, [2])
+    pred = torch.stack(
+        [
+            torch.sigmoid(model(feats)).cpu().detach()[:, 0, :],
+            torch.flip(torch.sigmoid(model(feats_rev)).cpu().detach()[:, 0, :], [1]),
+        ],
+        axis=0,
+    )
+    pred = torch.mean(pred, 0)
+    return pred
+
+
+def bigwig_reader(bws, summits, signal_window, batch_size):
+    # bws are list of lists:
+    feats = []
+    bar = trange(len(bws) * len(summits))
+    for bw in bws:
+        bw = [pyBigWig.open(i, "r") for i in bw]
+
+        for i in range(len(summits)):
+            bar.update(1)
+            chrom, summit = summits.iloc[i]
+            feat = np.nanmean(
+                [
+                    np.nan_to_num(
+                        j.values(chrom, summit - signal_window, summit + signal_window, numpy=True)
+                    )
+                    for j in bw
+                ],
+                axis=0,
+            )
+            feats.append(feat)
+            if len(feats) == batch_size:
+                yield np.array(feats)
+                feats = []
+    if len(feats) > 0:
+        yield np.array(feats)
+
+
+def numpy_reader(paths, summits, signal_window, batch_size):
+    feats = []
+    lengths = 0
+
+    bar = trange(len(paths) * len(summits))
+    for path in paths:
+        feat = np.nanmean([np.load(p)["arr_0"] for p in path], axis=0)
+        pad = feat.shape[-1] // 2 - signal_window
+        feat = feat[..., pad:-pad]
+        feats.append(feat)
+        lengths += feat.shape[0]
+        if lengths >= batch_size:
+            feats = np.concatenate(feats)
+            bar.update(len(feats))
+            for chunk in range(0, len(feats), batch_size):
+                yield feats[chunk : chunk + batch_size]
+            feats = []
+            lengths = 0
+    if len(feats) > 0:
+        yield np.concatenate(feats)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Bindingscore BPNet")
+    parser = argparse.ArgumentParser(description="seq2PRINT generate TFBS ")
     parser.add_argument("--count_pt", type=str, default=None, help="model.pt")
     parser.add_argument("--foot_pt", type=str, default=None, help="model.pt")
     parser.add_argument("--seq_count", type=str, nargs="+", help="seq_count", default=None)
@@ -15,17 +83,23 @@ def main():
     parser.add_argument("--genome", type=str, default="hg38", help="genome")
     parser.add_argument("--peaks", type=str, default=None, help="peaks")
     parser.add_argument("--save_name", type=str, default="/", help="save_dir")
+    parser.add_argument("--collection_name", type=str, default=None, help="collection_name")
     parser.add_argument("--gpus", nargs="+", type=int, help="gpus")
     parser.add_argument("--temp", action="store_true", default=False, help="temp")
     parser.add_argument(
         "--avg", action="store_true", default=False, help="just avg without finetune model"
     )
-    parser.add_argument("--overwrite", action="store_true", default=False, help="overwrite")
     parser.add_argument("--silent", action="store_true", default=False, help="silent")
     parser.add_argument("--per-peak", action="store_true", default=False, help="per-peak")
+    parser.add_argument("--write_numpy", action="store_true", default=False, help="write numpy")
+    parser.add_argument("--lora_ids", type=str, default=None, help="lora_ids")
+    parser.add_argument("--read_numpy", action="store_true", default=False, help="read numpy")
 
     torch.set_num_threads(4)
     args = parser.parse_args()
+    collection_name = args.collection_name
+    if collection_name is None:
+        collection_name = args.save_name
     seq_count = args.seq_count
     seq_foot = args.seq_foot
     count_pt = args.count_pt
@@ -34,11 +108,10 @@ def main():
     peaks = args.peaks
     gpus = args.gpus
     save_name = args.save_name
-    overwrite = args.overwrite
     silent = args.silent
     torch.cuda.set_device(gpus[0])
-    if save_name[-1] != "_":
-        save_name += "_"
+    save_name = save_name.split(",")  # if there are multiple save names save them separately.
+
     if count_pt is not None:
         count_model = torch.jit.load(count_pt, map_location="cpu")
         count_model.with_motif = False
@@ -56,226 +129,156 @@ def main():
 
     if count_model is None and foot_model is None:
         raise ValueError("No model loaded")
-    elif count_model is None:
-        count_model = foot_model
-        seq_count = seq_foot
-    elif foot_model is None:
-        foot_model = count_model
-        seq_foot = seq_count
 
-    split = {
-        "test": ["chr1", "chr3", "chr6"]
-        + ["chr8", "chr20"]
-        + [
-            "chr2",
-            "chr4",
-            "chr5",
-            "chr7",
-            "chr9",
-            "chr10",
-            "chr11",
-            "chr12",
-            "chr13",
-            "chr14",
-            "chr15",
-            "chr16",
-            "chr17",
-            "chr18",
-            "chr19",
-            "chr21",
-            "chr22",
-            "chrX",
-            "chrY",
-        ]
-    }
-
-    peaks = args.peaks
     summits = pd.read_table(peaks, sep="\t", header=None)
     summits = summits.drop_duplicates([0, 1, 2])  # drop exact same loci
     summits["summits"] = (summits[1] + summits[2]) // 2
     summits = summits[[0, "summits"]]
     summits["summits"] = np.array(summits["summits"], dtype=int)
-    summits = summits[summits[0].isin(split["test"])]
+
     signal_window = 1200 // 2
-    genome = args.genome
     if genome == "hg38":
         genome = scp.genome.hg38
     elif genome == "mm10":
         genome = scp.genome.mm10
     else:
         raise ValueError("genome not supported")
+    summits = summits[summits[0].isin(genome.chrom_sizes)]
 
-    seq_count = [pyBigWig.open(i, "r") for i in seq_count] if seq_count is not None else []
-    seq_foot = [pyBigWig.open(i, "r") for i in seq_foot] if seq_foot is not None else []
-
-    count_feats = []
-    foot_feats = []
-    batch_size = 512
-
-    count_preds = []
-    foot_preds = []
-    for i in trange(len(summits), disable=silent):
-        chrom, summit = summits.iloc[i]
-
-        count_feat = np.nanmean(
-            [
-                np.nan_to_num(
-                    i.values(chrom, summit - signal_window, summit + signal_window, numpy=True)
-                )
-                for i in seq_count
-            ],
-            axis=0,
-        )
-        foot_feat = np.nanmean(
-            [
-                np.nan_to_num(
-                    i.values(chrom, summit - signal_window, summit + signal_window, numpy=True)
-                )
-                for i in seq_foot
-            ],
-            axis=0,
-        )
-
-        count_feats.append(count_feat)
-        foot_feats.append(foot_feat)
-
-        if len(count_feats) == batch_size and (not args.avg):
-            count_feats = np.array(count_feats)
-            foot_feats = np.array(foot_feats)
-
-            if args.per_peak:
-                low, median, high = (
-                    np.quantile(count_feats, 0.05, axis=1, keepdims=True),
-                    np.quantile(count_feats, 0.5, axis=1, keepdims=True),
-                    np.quantile(count_feats, 0.95, axis=1, keepdims=True),
-                )
-                print(count_feats.shape)
-                count_feats = (count_feat - median) / (high - low)
-
-                low, median, high = (
-                    np.quantile(foot_feats, 0.05, axis=1, keepdims=True),
-                    np.quantile(foot_feats, 0.5, axis=1, keepdims=True),
-                    np.quantile(foot_feats, 0.95, axis=1, keepdims=True),
-                )
-                foot_feats = (foot_feat - median) / (high - low)
-
-            count_feats = torch.as_tensor(count_feats).float().cuda()[:, None, :]
-            foot_feats = torch.as_tensor(foot_feats).float().cuda()[:, None, :]
-            count_feats_rev = torch.flip(count_feats, [2])
-            foot_feats_rev = torch.flip(foot_feats, [2])
-            count_pred = torch.stack(
-                [
-                    torch.sigmoid(count_model(count_feats)).cpu().detach()[:, 0, :],
-                    torch.flip(
-                        torch.sigmoid(count_model(count_feats_rev)).cpu().detach()[:, 0, :],
-                        [1],
-                    ),
-                ],
-                axis=0,
-            )
-            foot_pred = torch.stack(
-                [
-                    torch.sigmoid(foot_model(foot_feats)).cpu().detach()[:, 0, :],
-                    torch.flip(
-                        torch.sigmoid(foot_model(foot_feats_rev)).cpu().detach()[:, 0, :],
-                        [1],
-                    ),
-                ],
-                axis=0,
-            )
-            count_pred = torch.mean(count_pred, 0)
-            foot_pred = torch.mean(foot_pred, 0)
-            # count_pred,_ = torch.max(count_pred, 0)
-            # foot_pred,_ = torch.max(foot_pred, 0)
-
-            count_preds.append(count_pred)
-            foot_preds.append(foot_pred)
-            count_feats = []
-            foot_feats = []
-
-    if len(count_feats) > 0 and (not args.avg):
-        count_feats = np.array(count_feats)
-        foot_feats = np.array(foot_feats)
-        count_feats = torch.as_tensor(count_feats).float().cuda()[:, None, :]
-        foot_feats = torch.as_tensor(foot_feats).float().cuda()[:, None, :]
-        count_feats_rev = torch.flip(count_feats, [2])
-        foot_feats_rev = torch.flip(foot_feats, [2])
-        count_pred = torch.stack(
-            [
-                torch.sigmoid(count_model(count_feats)).cpu().detach()[:, 0, :],
-                torch.flip(
-                    torch.sigmoid(count_model(count_feats_rev)).cpu().detach()[:, 0, :], [1]
-                ),
-            ],
-            axis=0,
-        )
-        foot_pred = torch.stack(
-            [
-                torch.sigmoid(foot_model(foot_feats)).cpu().detach()[:, 0, :],
-                torch.flip(torch.sigmoid(foot_model(foot_feats_rev)).cpu().detach()[:, 0, :], [1]),
-            ],
-            axis=0,
-        )
-        count_pred = torch.mean(count_pred, 0)
-        foot_pred = torch.mean(foot_pred, 0)
-        # count_pred, _ = torch.max(count_pred, 0)
-        # foot_pred, _ = torch.max(foot_pred, 0)
-        count_preds.append(count_pred)
-        foot_preds.append(foot_pred)
-    if args.avg:
-        count_pred = np.stack(count_feats, 0)[..., 100:-100]
-        seq_pred = np.stack(foot_feats, 0)[..., 100:-100]
+    # Four cases: with or without lora x read from numpy or bigwig
+    if args.lora_ids is None:
+        lora_ids = [""]
     else:
-        count_pred = torch.cat(count_preds, 0).numpy()
-        seq_pred = torch.cat(foot_preds, 0).numpy()
-        # np.savez(save_name + "TFBS.npz",
-        #          count_pred = count_pred,
-        #          seq_pred = seq_pred)
+        lora_ids = args.lora_ids.split(",")
+    if not args.write_numpy:
+        assert len(save_name) == len(
+            lora_ids
+        ), "When writing a bigwig file, the number of savename must be the same as lora_ids"
 
-    avg = (count_pred + seq_pred) / 2
-    regions = summits.copy()
-    regions[1] = regions["summits"] - signal_window + 100
-    regions[2] = regions["summits"] + signal_window - 100
-    regions = regions[[0, 1, 2]]
-    if not silent:
-        print(regions, avg.shape)
+    if len(gpus) > 1 and args.lora_ids is not None:
+        # Split lora_ids to different gpus
+        ids_batch = np.array_split(lora_ids, len(gpus))
+        if len(save_name) < len(ids_batch):
+            save_name = [save_name[0]] * len(
+                ids_batch
+            )  # this is fine, because we asserted above that the length has to be the same if writing bigwig
+        save_name_batch = np.array_split(save_name, len(gpus))
+        commands = [
+            [
+                "seq2print_tfbs",
+                "--count_pt",
+                args.count_pt,
+                "--foot_pt",
+                args.foot_pt,
+                "--seq_count",
+                " ".join(args.seq_count),
+                "--seq_foot",
+                " ".join(args.seq_foot),
+                "--genome",
+                args.genome,
+                "--peaks",
+                args.peaks,
+                "--gpus",
+                str(gpu),
+                "--lora_ids",
+                ",".join([str(i) for i in ids]),
+            ]
+            + (["--silent"] if args.silent else [])
+            + (["--per-peak"] if args.per_peak else [])
+            + (["--read_numpy"] if args.read_numpy else [])
+            + (["--write_numpy"] if args.write_numpy else [])
+            + (
+                ["--collection_name", f"{collection_name}_temp_TFBS_part{i}_"]
+                if args.write_numpy
+                else ["--save_name", save_name_batch[i]]
+            )
+            for i, (gpu, ids) in enumerate(zip(gpus, ids_batch))
+        ]
 
-    attribution_to_bigwig(
-        avg,
-        regions,
-        genome.chrom_sizes,
-        res=1,
-        mode="average",
-        output=(save_name + "TFBS.bigwig") if not args.avg else (save_name + "avg.bigwig"),
-        verbose=not silent,
-    )
-    if args.temp:
-        attribution_to_bigwig(
-            count_pred,
-            regions,
-            genome.chrom_sizes,
-            res=1,
-            mode="average",
-            output=(
-                (save_name + "TFBS_count.bigwig")
-                if not args.avg
-                else (save_name + "avg_count.bigwig")
-            ),
-            verbose=not silent,
-        )
-        attribution_to_bigwig(
-            seq_pred,
-            regions,
-            genome.chrom_sizes,
-            res=1,
-            mode="average",
-            output=(
-                (save_name + "TFBS_foot.bigwig")
-                if not args.avg
-                else (save_name + "avg_foot.bigwig")
-            ),
-            verbose=not silent,
-        )
+        pool = ProcessPoolExecutor(max_workers=len(gpus))
+        for gpu, command in zip(gpus, commands):
+            print(command)
+            pool.submit(subprocess.run, command)
+
+        pool.shutdown(wait=True)
+        # Only load and concat if in save numpy mode
+        if args.write_numpy:
+            results = []
+            for i in range(len(gpus)):
+                results.append(np.load(f"{collection_name}_temp_TFBS_part{i}_TFBS.npz")["tfbs"])
+            avg = np.concatenate(results)
+            np.savez(
+                collection_name + "TFBS.npz",
+                tfbs=avg,
+            )
+            for i in range(len(gpus)):
+                os.remove(collection_name + f"_temp_TFBS_part{i}_TFBS.npz")
+
+    else:
+        # only one gpu
+        input_readers = []
+        models = []
+        reader = bigwig_reader if not args.read_numpy else numpy_reader
+        if seq_foot is not None:
+            input_readers.append(
+                reader(
+                    [
+                        [sc.replace("{lora_id}", str(lora_id)) for sc in seq_count]
+                        for lora_id in lora_ids
+                    ],
+                    summits,
+                    signal_window,
+                    512,
+                )
+            )
+            models.append(count_model)
+        if seq_count is not None:
+            input_readers.append(
+                reader(
+                    [
+                        [sf.replace("{lora_id}", str(lora_id)) for sf in seq_foot]
+                        for lora_id in lora_ids
+                    ],
+                    summits,
+                    signal_window,
+                    512,
+                )
+            )
+            models.append(foot_model)
+
+        output_all = []
+        for reader, model in zip(input_readers, models):
+            output = []
+            for feats in reader:
+                output.append(forward_pass_model(feats, model))
+            output = torch.cat(output, 0).numpy()
+            output_all.append(output)
+        # Get the average of all models
+        avg = np.mean(output_all, axis=0)
+        avg = avg.reshape((len(lora_ids), len(summits), -1))
+
+        if args.write_numpy:
+            np.savez(
+                collection_name + "TFBS.npz",
+                tfbs=avg,
+            )
+        else:
+
+            regions = summits.copy()
+            regions[1] = regions["summits"] - signal_window + 100
+            regions[2] = regions["summits"] + signal_window - 100
+            regions = regions[[0, 1, 2]]
+            for i, (lora_id, name) in enumerate(zip(lora_ids, save_name)):
+                print(name, lora_id)
+                attribution_to_bigwig(
+                    avg[i],
+                    regions,
+                    genome.chrom_sizes,
+                    res=1,
+                    mode="average",
+                    output=name + "TFBS.bigwig",
+                    verbose=not silent,
+                )
 
 
 if __name__ == "__main__":

@@ -37,9 +37,9 @@ class seq2PRINTDataset(torch.utils.data.Dataset):
         Length of the output signal track. The signal sequence will be centered at the summit.
     max_jitter: int
         Maximum jitter to apply to the sequences.
-    min_counts: int
+    min_counts: int | None
         Minimum coverage to consider a peak to be used as training data
-    max_counts: int
+    max_counts: int | None
         Maximum coverage to consider a peak to be used as training data
     cached: bool
         Whether to cache the data first. If True, the data will be cached first before training. Otherwise, the data will be generated on the fly.

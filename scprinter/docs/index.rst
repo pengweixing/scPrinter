@@ -20,12 +20,6 @@ Coming functions:
     :loop:
     :width: 960
 
-Beta testing on fasrc!
-----------------------
-**Why Fasrc?**
-
-That way the lab can share one environment and we can all use the same version of the software.
-If people raise issues, I can fix them and avoid people reinstalling softwares.
 
 How to cite
 -----------

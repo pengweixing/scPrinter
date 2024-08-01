@@ -472,4 +472,6 @@ def macs2(frag_file, name, outdir, format="BEDPE", p_cutoff=None):
     # ]
     if p_cutoff is not None:
         commands.extend(["-p", str(p_cutoff)])
+    else:
+        commands.extend(["-q", "0.01"])
     subprocess.run(commands)

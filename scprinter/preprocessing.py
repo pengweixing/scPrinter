@@ -251,12 +251,13 @@ def import_fragments(
         data2.obs_names = data.obs_names
         print("start transferring insertions")
         for key in data.adatas.obsm.keys():
-            if "insertions" not in key:
+            if "insertion" not in key:
                 continue
             insertions = data.adatas.obsm[key]
             data2.obsm[key] = insertions.tocsc()
-        for key in data.adatas.obs:
-            data2.obs[key] = data.adatas.obs[key][:]
+        dfs = data.adatas.obs[:]
+        for key in dfs:
+            data2.obs[key.name] = dfs[key.name]
 
         data2.uns["reference_sequences"] = data.uns["reference_sequences"]
         data.close()
@@ -266,8 +267,7 @@ def import_fragments(
             os.remove(savename + "_part%d" % i)
         os.remove(savename + "_temp")
         data = snap.read(savename)
-
-    data.uns["genome"] = f"{genome=}".split("=")[0]
+    data.uns["genome"] = genome.name
     data.uns["unique_string"] = unique_string
 
     data.close()
@@ -509,6 +509,8 @@ def export_bigwigs(
 
 
 def create_frag_group(temp_path, frag_file, cell_grouping, group_name):
+    if type(frag_file) is list:
+        frag_file = " ".join(frag_file)
     bcs = np.sort(np.unique(cell_grouping))
     with open(os.path.join(temp_path, f"{group_name}_whitelist.txt"), "w") as f:
         for w in bcs:
@@ -550,6 +552,7 @@ def call_peaks(
     clean_temp=True,
     preset: Literal["seq2PRINT", "chromvar", None] = None,
     n_jobs=20,
+    overwrite=True,
     **kwargs,
 ):
     if type(group_names) not in [np.ndarray, list]:
@@ -564,6 +567,10 @@ def call_peaks(
         peak_calling = {}
 
     for name, grouping in zip(group_names, cell_grouping):
+        if (
+            os.path.exists(os.path.join(printer.file_path, "macs2", f"{name}_peaks.narrowPeak"))
+        ) and (not overwrite):
+            continue
         pool.submit(
             call_peak_one_group, printer.file_path, frag_file, grouping, name, preset, clean_temp
         )

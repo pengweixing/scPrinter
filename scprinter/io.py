@@ -110,7 +110,6 @@ class scPrinter:
                 adata.uns["footprints"] = {}
             if "insertion" not in adata.uns:
                 adata.uns["insertion"] = {}
-
             # Associate some variables, the unique_string object is used to store the global variables and make sure
             # when there are multiple printer open, they won't overlap each other
             self.insertion_file = adata
@@ -443,11 +442,9 @@ def load_printer(path: str | Path, genome: Genome, attach: bool = True):
         whether to attach the footprintsadata / bindingscoreadata to the printer object
     """
     data = snap.read(path)
-    assert (
-        data.uns["genome"] == f"{genome=}".split("=")[0]
-    ), "Process data with %s, but now loading with %s" % (
+    assert data.uns["genome"] == genome.name, "Process data with %s, but now loading with %s" % (
         data.uns["genome"],
-        f"{genome=}".split("=")[0],
+        genome.name,
     )
     printer = scPrinter(
         adata=data,

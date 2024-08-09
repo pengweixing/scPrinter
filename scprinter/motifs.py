@@ -480,7 +480,7 @@ class Kmers:
 
         res = pd.DataFrame(res, index=adata.var_names, columns=self.kmers)
         adata.varm["motif_match"] = res.to_numpy()
-        adata.uns["motif_name"] = res.columns
+        adata.uns["motif_name"] = list(res.columns)
 
 
 class Motifs:
@@ -816,6 +816,10 @@ class Motifs:
         self.collect_child_process(
             p_list, verbose, bar, count, motifs_length, name2id, maps, break_on_min_jobs=False
         )
+        if count:
+            for i in range(len(maps)):
+                if len(maps[i]) == 0:
+                    maps[i] = np.zeros((1, len(motifs_length)))
         pool.shutdown(wait=True)
 
         if verbose:

@@ -10,6 +10,8 @@ from scprinter.seq.dataloader import *
 from scprinter.seq.interpretation.attributions import *
 from scprinter.seq.Models import *
 
+# multiple savename error
+
 
 def forward_pass_model(feats, model):
     feats = torch.as_tensor(feats).float().cuda()[:, None, :]
@@ -109,7 +111,8 @@ def main():
     gpus = args.gpus
     save_name = args.save_name
     silent = args.silent
-    torch.cuda.set_device(gpus[0])
+    print("gpu", int(gpus[0]))
+    torch.cuda.set_device(int(gpus[0]))
     save_name = save_name.split(",")  # if there are multiple save names save them separately.
 
     if count_pt is not None:
@@ -190,7 +193,7 @@ def main():
             + (
                 ["--collection_name", f"{collection_name}_temp_TFBS_part{i}_"]
                 if args.write_numpy
-                else ["--save_name", save_name_batch[i]]
+                else ["--save_name", ",".join(list(save_name_batch[i]))]
             )
             for i, (gpu, ids) in enumerate(zip(gpus, ids_batch))
         ]

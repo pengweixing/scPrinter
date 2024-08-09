@@ -320,7 +320,6 @@ def bag_deviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None):
     """
 
     assert motif_corr_matrix is not None, "Motif correlation matrix must be provided"
-    assert 0.15 < cor < 1, "Correlation coefficient must be between 0.15 and 1"
     assert adata is not None or ranked_df is not None, "Either adata or ranking_df must be provided"
 
     # Compute variability and get transcription factors (TFs)
@@ -336,7 +335,12 @@ def bag_deviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None):
         TFnames = ranked_df.index.tolist()
     TFnames_to_rank = {tf: i for i, tf in enumerate(TFnames)}
     # Import correlation based on PWMs for the organism
-    cormat = pd.read_csv(motif_corr_matrix, sep="\t")  # Assuming the RDS file contains one object
+    if type(motif_corr_matrix) is pd.DataFrame:
+        cormat = motif_corr_matrix
+    else:
+        cormat = pd.read_csv(
+            motif_corr_matrix, sep="\t"
+        )  # Assuming the RDS file contains one object
 
     # Historical code, kept for future references
     # if use_name:

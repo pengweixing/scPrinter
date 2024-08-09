@@ -475,3 +475,19 @@ def macs2(frag_file, name, outdir, format="BEDPE", p_cutoff=None):
     else:
         commands.extend(["-q", "0.01"])
     subprocess.run(commands)
+
+
+def macs3(frag_file, name, outdir, format="BEDPE"):
+    commands = [
+        "macs3",
+        "hmmratac",
+        "-i",
+        frag_file,
+        "-f",
+        "BEDPE",
+        "-n",
+        name,
+        "--outdir",
+        outdir,
+    ]
+    subprocess.run(commands)

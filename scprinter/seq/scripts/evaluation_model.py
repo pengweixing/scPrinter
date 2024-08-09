@@ -33,6 +33,7 @@ parser.add_argument("--silent", action="store_true", default=False, help="silent
 parser.add_argument(
     "--save_norm", action="store_true", default=False, help="just save the normalization factor"
 )
+parser.add_argument("--save_key", type=str, default="deepshap", help="key for saving")
 
 
 # ((start != 0) or (end != n_summits))
@@ -155,6 +156,7 @@ def main():
 
     # If there's coverage, set it to be the same across all models (so there won't be a coverage bias)
     if acc_model.coverages is not None:
+        print("setting coverage to be the same")
         mm = acc_model.coverages.weight.data[:, -1].mean()
         acc_model.coverages.weight.data[:, -1] = mm
 
@@ -198,7 +200,9 @@ def main():
     ).T
     acc_model.upsample = False
 
-    save_dir = f"{args.pt}_deepshap" + (f"_sample{args.sample}" if args.sample is not None else "")
+    save_dir = f"{args.pt}_{args.save_key}" + (
+        f"_sample{args.sample}" if args.sample is not None else ""
+    )
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -244,6 +248,8 @@ def main():
                     str(gpu),
                     "--decay",
                     str(args.decay),
+                    "--save_key",
+                    args.save_key,
                 ]
                 + (["--overwrite"] if args.overwrite else [])
                 + (["--write_numpy"] if args.write_numpy else [])
@@ -293,6 +299,8 @@ def main():
                     str(gpu),
                     "--decay",
                     str(args.decay),
+                    "--save_key",
+                    args.save_key,
                 ]
                 + (["--overwrite"] if args.overwrite else [])
                 + (["--model_norm", args.model_norm] if args.model_norm is not None else [])

@@ -172,6 +172,7 @@ def import_fragments(
             del kwargs[historical_kwarg]
 
     if len(pathsToFrags) == 1:
+        print("single input")
         path = pathsToFrags[0]
 
         if auto_detect_shift:
@@ -183,7 +184,7 @@ def import_fragments(
                 "If you believe the auto_detect_shift is wrong, please set auto_detect_shift=False"
             )
             print("detected plus_shift and minus_shift are", plus_shift, minus_shift, "for", path)
-
+        time.sleep(5)
         data = import_data(
             path,
             barcodes[0],

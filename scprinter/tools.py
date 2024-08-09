@@ -794,9 +794,9 @@ def get_footprint_score(
         df_obs = pd.DataFrame({"name": group_names, "id": np.arange(len(group_names))})
         df_obs.index = group_names
         df_var = regions
+        region_identifiers = [str(x) for x in region_identifiers]
         df_var["identifier"] = region_identifiers
         df_var.index = region_identifiers
-
         adata_params = {
             "X": csr_matrix((len(group_names), len(regions))),
             "obs": df_obs,
@@ -1465,7 +1465,7 @@ def seq_lora_model_config(
             elif type(embeddings) is np.ndarray:
                 embed.append(embeddings[ids].mean(axis=0))
             cov.append(np.log10(np.array(coverage_gw[ids]).sum()))
-        bc, embed, cov = np.array(bc), np.array(embed), np.array(cov)
+        bc, embed, cov = (np.array(bc, dtype="object"), np.array(embed), np.array(cov))
         embed = np.concatenate([embed, cov[:, None]], axis=-1)
         pickle.dump(bc, open(bc_path, "wb"))
         pickle.dump(embed, open(embed_path, "wb"))
@@ -1484,6 +1484,7 @@ def seq_lora_model_config(
         "dataloader_mode": "uniform",
         "cell_sample": 10,
     }
+    # Once upon a time, I used lr=3e-4....
     for key in default_lora_json:
         if key not in template_json:
             template_json[key] = default_lora_json[key]
@@ -1498,6 +1499,7 @@ def seq_lora_slice_model_config(
     pretrained_lora_model,
     model_name=None,
     finetune_group_names: list[str] | np.ndarray = [],
+    fold=0,
     additional_lora_config={},
     path_swap=None,
     config_save_path: str | Path = None,
@@ -1515,6 +1517,8 @@ def seq_lora_slice_model_config(
         The name of the model, if None, it will be the same as the pretrained model
     finetune_group_names: list[str] | np.ndarray
         The group names you want to finetune on (note that these group names have to be in the group names used to train the lora model)
+    fold: int
+        The fold number
     additional_lora_config: dict
         Additional configurations for the lora model
     path_swap: tuple
@@ -1553,7 +1557,7 @@ def seq_lora_slice_model_config(
     for key in additional_lora_config:
         lora_config[key] = additional_lora_config[key]
     lora_config["group_names"] = finetune_group_names
-    lora_config["savename"] = model_name
+    lora_config["savename"] = f"{model_name}_fold{fold}"
     if config_save_path is not None:
         with open(config_save_path, "w") as f:
             json.dump(lora_config, f, indent=4, cls=NumpyEncoder)
@@ -1620,7 +1624,15 @@ def launch_seq2print(
         os.system(command_str)
 
 
-def ohe_for_modisco(region_path, genome, model=None, dna_len=1840, signal_len=1000, save_path=None):
+def ohe_from_region(
+    region_path,
+    genome,
+    model=None,
+    dna_len=1840,
+    signal_len=1000,
+    save_path=None,
+    return_summits=False,
+):
     """
     Generate the ohe DNA matrices for modisco purpose
 
@@ -1680,7 +1692,12 @@ def ohe_for_modisco(region_path, genome, model=None, dna_len=1840, signal_len=10
     ohe = dataset.cache_seqs.detach().cpu().numpy()
     if save_path is not None:
         np.savez(save_path, ohe)
+    if return_summits:
+        return ohe, summits
     return ohe
+
+
+ohe_for_modisco = ohe_from_region
 
 
 def seq_attr_seq2print(
@@ -1703,6 +1720,7 @@ def seq_attr_seq2print(
     verbose=True,
     launch=False,
     numpy_mode=False,
+    save_key="deepshap",
 ):
     """
     Launch the sequence based attribution score calculation.
@@ -1747,7 +1765,8 @@ def seq_attr_seq2print(
         Whether to launch the command or just print the command string
     numpy_mode: bool
         Whether to return the numpy array of the sequence attributions instead of creating a bigwig file. This is efficient when you only have a few peaks to calculate the sequence attributions for.
-
+    save_key: str
+        A keyword for this set of sequence attributions, it should be unique to the set of regions you are using.
     Returns
     -------
 
@@ -1774,6 +1793,7 @@ def seq_attr_seq2print(
                 verbose=verbose,
                 launch=launch,
                 numpy_mode=numpy_mode,
+                save_key=save_key,
             )
         return
     genome = genome.name
@@ -1802,7 +1822,7 @@ def seq_attr_seq2print(
     command = (
         f"{entrance_script} --pt {model_path} --peaks {region_path} "
         f"--method {method} --wrapper {wrapper} --nth_output {nth_output} "
-        f"--gpus {gpus} --genome {genome} --decay {decay}"
+        f"--gpus {gpus} --genome {genome} --decay {decay} --save_key {save_key}"
     )
     if overwrite:
         command += " --overwrite "
@@ -1846,20 +1866,20 @@ def seq_attr_seq2print(
     if not save_norm:
         if model_type == "seq2print":
             return os.path.join(
-                f"{model_path}_deepshap" + (f"_sample{sample}" if sample is not None else ""),
+                f"{model_path}_{save_key}" + (f"_sample{sample}" if sample is not None else ""),
                 f"hypo.{wrapper}.{method}_{nth_output}_.{decay}.npz",
             )
         else:
             return [
                 os.path.join(
-                    f"{model_path}_deepshap" + (f"_sample{sample}" if sample is not None else ""),
+                    f"{model_path}_{save_key}" + (f"_sample{sample}" if sample is not None else ""),
                     f"model_{id}.hypo.{wrapper}.{method}_{nth_output}_.{decay}.npz",
                 )
                 for id in lora_ids
             ]
     else:
         return os.path.join(
-            f"{model_path}_deepshap" + (f"_sample{sample}" if sample is not None else ""),
+            f"{model_path}_{save_key}" + (f"_sample{sample}" if sample is not None else ""),
             f"norm.{wrapper}.{method}_{nth_output}_.{decay}.npy",
         )
 
@@ -1916,12 +1936,14 @@ def seq_tfbs_seq2print(
     return_adata: bool
         Summarize the TFBS in an adata format that's similar to the footprints / tfbs scores
     save_key: str | None
-        The name of the collection (used for LoRA, name the whole set), if None, will be some random strings
+        The keyword of the collection (used for LoRA, name the whole set). It should be unique to the set of regions you are using.
 
     Returns
     -------
 
     """
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
     if lora_config is not None:
         if type(lora_config) is not dict:
             lora_config = json.load(open(lora_config, "r"))
@@ -1932,6 +1954,8 @@ def seq_tfbs_seq2print(
     if return_adata:
         assert save_key is not None, "Please provide the save_key if you are using return_adata"
         assert launch is True, "Please set launch as True if you are using return_adata"
+    else:
+        save_key = "deepshap" if save_key is None else save_key
     if model_type == "lora":
         assert group_names is not None, "Please provide the lora_ids if you are using lora model"
         assert (seq_attr_count is None) and (
@@ -1948,15 +1972,17 @@ def seq_tfbs_seq2print(
         seq_attr_count = [seq_attr_count]
     if type(seq_attr_footprint) in [str, Path]:
         seq_attr_footprint = [seq_attr_footprint]
-
+    # todo: don't print all commands for the user to run, there are duplicated commands
     seq_attrs_all = []
     all_pass = True
     read_numpy = False
+
     for seq_attr, template, kind in zip(
         [seq_attr_count, seq_attr_footprint],
         ["attr.count.shap_hypo_0_.0.85.bigwig", "attr.just_sum.shap_hypo_0-30_.0.85.bigwig"],
         ["count", "footprint"],
     ):
+
         if seq_attr is None:
             if verbose:
                 print(f"Automatic locating seq_attr_{kind}")
@@ -1966,10 +1992,24 @@ def seq_tfbs_seq2print(
                 model_path = [model_path]
             seq_attr = []
 
-            for id in lora_ids:
-                for model in model_path:
+            if overwrite_seqattr:
+                for id in lora_ids:
+                    for model in model_path:
+                        seq_attr_path = os.path.join(
+                            f"{model}_{save_key}",
+                            f"model_{id}." + template if id is not None else template,
+                        )
+                        seq_attr_path_npz = seq_attr_path.replace(".bigwig", ".npz")
+                        if os.path.exists(seq_attr_path_npz):
+                            os.remove(seq_attr_path_npz)
+                        # if os.path.exists(seq_attr_path):
+                        #     os.remove(seq_attr_path)
+
+            for model in model_path:
+                generate_seq_attr = []
+                for id in lora_ids:
                     seq_attr_path = os.path.join(
-                        f"{model}_deepshap",
+                        f"{model}_{save_key}",
                         f"model_{id}." + template if id is not None else template,
                     )
                     seq_attr_path_npz = seq_attr_path.replace(".bigwig", ".npz")
@@ -1979,28 +2019,32 @@ def seq_tfbs_seq2print(
                     if (not os.path.exists(seq_attr_path)) and (
                         not os.path.exists(seq_attr_path_npz)
                     ):
-                        if verbose:
-                            print(f"{seq_attr_path} file does not exist")
+
                         all_pass = False
-                        seq_attr_seq2print(
-                            region_path=region_path,
-                            model_type=model_type,
-                            model_path=model,
-                            genome=genome,
-                            gpus=gpus,
-                            preset=kind,
-                            overwrite=overwrite_seqattr,
-                            verbose=False,
-                            lora_ids=lora_ids,
-                            launch=launch,
-                            numpy_mode=return_adata,
-                        )
+                        generate_seq_attr.append(id)
                         if return_adata:
                             read_numpy = True
+                if verbose and (len(generate_seq_attr) > 0):
+                    print(f"{model} seq attr file does not exist")
 
+                if len(generate_seq_attr) > 0:
+                    seq_attr_seq2print(
+                        region_path=region_path,
+                        model_type=model_type,
+                        model_path=model,
+                        genome=genome,
+                        gpus=gpus,
+                        preset=kind,
+                        overwrite=overwrite_seqattr,
+                        verbose=False,
+                        lora_ids=generate_seq_attr,
+                        launch=launch,
+                        numpy_mode=return_adata,
+                        save_key=save_key,
+                    )
             seq_attr.append(
                 os.path.join(
-                    f"{model}_deepshap",
+                    f"{model}_{save_key}",
                     "model_{lora_id}." + template if id is not None else template,
                 )
             )
@@ -2010,7 +2054,8 @@ def seq_tfbs_seq2print(
         if read_numpy:
             seq_attr = [x.replace(".bigwig", ".npz") for x in seq_attr]
         seq_attrs_all.append(seq_attr)
-
+    if launch:
+        all_pass = True  # if we are launching, we assume all the files are there
     if not all_pass:
         return
 
@@ -2067,6 +2112,7 @@ def seq_tfbs_seq2print(
         adata = anndata.AnnData(**adata_params)
         for i, region_identifier in enumerate(region_identifiers):
             adata.obsm[region_identifier] = results[:, i]
+        print(adata)
         return adata
 
 
@@ -2082,6 +2128,7 @@ def seq_denovo_seq2print(
     overwrite=False,
     verbose=False,
     launch=False,
+    attr_key="deepshap",
 ):
     """
     Launch the sequence based denovo motif discovery using modisco
@@ -2110,7 +2157,8 @@ def seq_denovo_seq2print(
         The command strings will always be printed, this controls whether to print additional information.
     launch: bool
         Whether to launch the training script or just print the command string (and you can copy and paste to run it yourself)
-
+    attr_key: str
+        A keyword for the set of sequence attributions to calculate modisco on, it should be unique to the set of regions you are using.
 
     Returns
     -------
@@ -2128,7 +2176,7 @@ def seq_denovo_seq2print(
     seq_attrs = []
     for model in model_path:
         seq_attr_path = os.path.join(
-            f"{model}_deepshap",
+            f"{model}_{attr_key}",
             (
                 "hypo.count.shap_hypo_0_.0.85.npz"
                 if preset == "count"
@@ -2150,6 +2198,7 @@ def seq_denovo_seq2print(
             overwrite=overwrite,
             verbose=verbose,
             launch=launch,
+            save_key=attr_key,
         )
     if not os.path.exists(save_path) | overwrite:
         modisco_helper(
@@ -2160,6 +2209,7 @@ def seq_denovo_seq2print(
             n=n_seqlets,
             w=modisco_window,
             launch=launch,
+            save_key=attr_key,
         )
 
 
@@ -2168,19 +2218,29 @@ def seq_denovo_callhits(
     model_path: str | Path | list[str] | list[Path],
     region_path: str | Path,
     device="cuda:0",
+    attr_key="deepshap",
     preset: Literal["footprint", "count"] = "footprint",
     save_path: str | Path = None,
+    overwrite=False,
     verbose=False,
     launch=False,
     return_hits=True,
+    genome=None,
 ):
     ohe_path = f"{region_path}_ohe.npz"
+    if not os.path.exists(ohe_path):
+        ohe_for_modisco(region_path, genome, model=model_path[0], save_path=ohe_path)
+
     if type(model_path) is not list:
         model_path = [model_path]
     seq_attrs = []
+    save_path_dir = os.path.dirname(save_path)
+    print(save_path_dir)
+    if not os.path.exists(save_path_dir):
+        os.makedirs(save_path_dir)
     for model in model_path:
         seq_attr_path = os.path.join(
-            f"{model}_deepshap",
+            f"{model}_{attr_key}",
             (
                 "hypo.count.shap_hypo_0_.0.85.npz"
                 if preset == "count"
@@ -2189,24 +2249,35 @@ def seq_denovo_callhits(
         )
         seq_attrs.append(seq_attr_path)
     seq_attr = seq_attrs[0] if len(seq_attrs) == 1 else modisco_output + ".avg.hypo.npz"
-
-    command1 = (
-        f"finemo extract-regions-modisco-fmt -s {ohe_path} -a {seq_attr} -o {save_path}.finemo.npz"
-    )
-    command2 = f"finemo call-hits -M pp -r {save_path}.finemo.npz -m {modisco_output} -o {save_path} -d {device}"
-    if verbose:
+    if not os.path.exists(f"{save_path}/hits.tsv") | overwrite:
+        command1 = f"finemo extract-regions-modisco-fmt -s {ohe_path} -a {seq_attr} -o {save_path}.finemo.npz"
+        command2 = f"finemo call-hits -M pp -r {save_path}.finemo.npz -m {modisco_output} -o {save_path} -d {device}"
+        if verbose:
+            if launch:
+                print(launch_template)
+            else:
+                print(verbose_template)
+        print(command1)
         if launch:
-            print(launch_template)
-        else:
-            print(verbose_template)
-    print(command1)
-    if launch:
-        os.system(command1)
-    print(command2)
-    if launch:
-        os.system(command2)
+            os.system(command1)
+        print(command2)
+        if launch:
+            os.system(command2)
     if return_hits:
-        hits = pd.read_csv(f"{save_path}/hits.tsv", sep="\t", header=None)
+        # chr     start   end     start_untrimmed end_untrimmed   motif_name      hit_coefficient hit_correlation hit_importance  strand
+        #   peak_name       peak_id
+        hits = pd.read_csv(f"{save_path}/hits.tsv", sep="\t")
+        regions = regionparser(region_path, printer=None, width=1000)
+        region_used = regions.iloc[hits["peak_id"]]
+        hits["chr"] = np.array(region_used.iloc[:, 0])
+        hits["distance_to_center"] = np.abs((hits["start"] + hits["end"]) // 2 - 500)
+        hits["start"] = np.array(region_used.iloc[:, 1]) + np.array(hits["start"])
+        hits["end"] = np.array(region_used.iloc[:, 1]) + np.array(hits["end"])
+        hits["start_untrimmed"] = np.array(region_used.iloc[:, 1]) + np.array(
+            hits["start_untrimmed"]
+        )
+        hits["end_untrimmed"] = np.array(region_used.iloc[:, 1]) + np.array(hits["end_untrimmed"])
+
         return hits
 
 
@@ -2332,7 +2403,7 @@ def modisco_report(
     meme_motif: os.PathLike | Literal["human", "mouse"],
     delta_effect_path: str | Path = None,
     delta_effect_prefix="",
-    is_writing_tomtom_matrix: bool = False,
+    is_writing_tomtom_matrix: bool = True,
     top_n_matches=3,
     trim_threshold=0.3,
     trim_min_length=3,

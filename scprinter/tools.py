@@ -1438,7 +1438,7 @@ def seq_lora_model_config(
     model_name = model_name if model_name is not None else additional_lora_config["savename"]
     bc_path = os.path.join(printer.file_path, f"{model_name}_grp2barcodes.pkl")
     embed_path = os.path.join(printer.file_path, f"{model_name}_grp2embeddings.pkl")
-
+    cov_path = os.path.join(printer.file_path, f"{model_name}_grp2covs.pkl")
     template_json = copy.deepcopy(model_config)
     for key in additional_lora_config:
         template_json[key] = additional_lora_config[key]
@@ -1453,6 +1453,7 @@ def seq_lora_model_config(
     template_json["insertion"] = insertion_path.replace(before, after)
     template_json["grp2barcodes"] = bc_path.replace(before, after)
     template_json["grp2embeddings"] = embed_path.replace(before, after)
+    template_json["grp2covs"] = cov_path.replace(before, after)
     template_json["pretrain_model"] = pretrain_model.replace(before, after)
     template_json["group_names"] = list(group_names)
     if (not os.path.exists(bc_path)) | overwrite_barcode:
@@ -1465,10 +1466,11 @@ def seq_lora_model_config(
             elif type(embeddings) is np.ndarray:
                 embed.append(embeddings[ids].mean(axis=0))
             cov.append(np.log10(np.array(coverage_gw[ids]).sum()))
-        bc, embed, cov = (np.array(bc, dtype="object"), np.array(embed), np.array(cov))
-        embed = np.concatenate([embed, cov[:, None]], axis=-1)
+        bc, embed, cov = (np.array(bc, dtype="object"), np.array(embed), np.array(cov)[:, None])
+        # embed = np.concatenate([embed, cov[:, None]], axis=-1)
         pickle.dump(bc, open(bc_path, "wb"))
         pickle.dump(embed, open(embed_path, "wb"))
+        pickle.dump(cov, open(cov_path, "wb"))
 
     default_lora_json = {
         "lora_rank": 32,
@@ -1483,6 +1485,7 @@ def seq_lora_model_config(
         "accumulate_grad_batches": 8,
         "dataloader_mode": "uniform",
         "cell_sample": 10,
+        "coverage_in_lora": True,
     }
     # Once upon a time, I used lr=3e-4....
     for key in default_lora_json:

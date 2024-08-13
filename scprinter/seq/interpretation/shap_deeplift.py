@@ -6,7 +6,11 @@ import torch
 import torch.nn.functional as F
 from packaging import version
 from shap.explainers._explainer import Explainer
-from torch.cuda.amp import GradScaler
+
+try:
+    from torch.amp import GradScaler
+except ImportError:
+    from torch.cuda.amp import GradScaler
 
 """
 Code adapted from DeepSHAP, but modified with custom non-linear operations
@@ -150,7 +154,7 @@ class PyTorchDeep(Explainer):
         self.model.zero_grad()
         X = [x.requires_grad_() for x in inputs]
 
-        scaler = GradScaler(enabled=self.amp)
+        scaler = GradScaler("cuda", enabled=self.amp)
 
         try:
             autocast_context = torch.autocast(

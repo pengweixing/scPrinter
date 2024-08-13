@@ -123,13 +123,15 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         insertion = os.path.join(data_dir, config["insertion"])
         grp2barcodes = os.path.join(data_dir, config["grp2barcodes"])
         grp2embeddings = os.path.join(data_dir, config["grp2embeddings"])
+        grp2covs = os.path.join(data_dir, config["grp2covs"])
         cell_sample = config["cell_sample"]
         insertion = pickle.load(open(insertion, "rb"))
         grp2barcodes = np.array(pickle.load(open(grp2barcodes, "rb")), dtype="object")
         grp2embeddings = np.array(pickle.load(open(grp2embeddings, "rb")))
+        grp2covs = np.array(pickle.load(open(grp2covs, "rb")))
         if cells_of_interest is not None:
             grp2barcodes = grp2barcodes[cells_of_interest]
-            grp2embeddings = grp2embeddings[cells_of_interest]
+
         lora_mode = True
     else:
         pretrain_model = None
@@ -189,7 +191,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
     cov = {k: None for k in split}
     if not lora_mode:
         signals = os.path.join(data_dir, config["signals"])
-        bias = str(genome.fetch_bias())[:-3] + ".bw"
+        bias = str(genome.fetch_bias_bw())
         signals = [signals, bias]
         datasets = {
             k: seq2PRINTDataset(
@@ -231,7 +233,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         datasets = {
             k: scseq2PRINTDataset(
                 insertion_dict=insertion,
-                bias=str(genome.fetch_bias())[:-3] + ".bw",
+                bias=str(genome.fetch_bias_bw()),
                 group2idx=grp2barcodes,
                 ref_seq=genome.fetch_fa(),
                 summits=summits[summits[0].isin(split[k])],
@@ -346,6 +348,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
             dna_len=acc_model.dna_len,
             output_len=acc_model.output_len,
             embeddings=grp2embeddings,
+            coverages=grp2covs,
             rank=config["lora_rank"],
             hidden_dim=config["lora_hidden_dim"],
             lora_dna_cnn=config["lora_dna_cnn"],
@@ -354,114 +357,126 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
             lora_profile_cnn=config["lora_profile_cnn"],
             lora_count_cnn=config["lora_count_cnn"],
             n_lora_layers=config["n_lora_layers"],
+            coverage_in_lora=config["coverage_in_lora"],
         )
         acc_model = acc_model.cuda()
 
     if pretrain_lora_model is not None:
         pretrain_lora_model = torch.load(pretrain_lora_model, map_location="cpu")
-        if isinstance(acc_model.profile_cnn_model, Footprints_head):
-            acc_model.profile_cnn_model.conv_layer.layer.load_state_dict(
-                pretrain_lora_model.profile_cnn_model.conv_layer.layer.state_dict()
+        acc_model.load_state_dict(pretrain_lora_model.state_dict())
+        if cells_of_interest is not None:
+            acc_model.embeddings = nn.Embedding.from_pretrained(
+                torch.tensor(grp2embeddings[cells_of_interest]).float()
             )
-            acc_model.profile_cnn_model.linear.layer.load_state_dict(
-                pretrain_lora_model.profile_cnn_model.linear.layer.state_dict()
+            acc_model.coverages = nn.Embedding.from_pretrained(
+                torch.tensor(grp2covs[cells_of_interest]).float()
             )
-        elif isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead):
-            acc_model.profile_cnn_model.adjustment_footprint.load_state_dict(
-                pretrain_lora_model.profile_cnn_model.adjustment_footprint.state_dict()
-            )
-            acc_model.profile_cnn_model.adjustment_count.load_state_dict(
-                pretrain_lora_model.profile_cnn_model.adjustment_count.state_dict()
-            )
+        acc_model = acc_model.cuda()
 
-            acc_model.profile_cnn_model.footprints_head.conv_layer.layer.load_state_dict(
-                pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer.layer.state_dict()
-            )
-            acc_model.profile_cnn_model.footprints_head.linear.layer.load_state_dict(
-                pretrain_lora_model.profile_cnn_model.footprints_head.linear.layer.state_dict()
-            )
-        else:
-            print("profile cnn model not supported", type(acc_model.profile_cnn_model))
+        # pretrain_lora_model = torch.load(pretrain_lora_model, map_location="cpu")
+        # if isinstance(acc_model.profile_cnn_model, Footprints_head):
+        #     acc_model.profile_cnn_model.conv_layer.layer.load_state_dict(
+        #         pretrain_lora_model.profile_cnn_model.conv_layer.layer.state_dict()
+        #     )
+        #     acc_model.profile_cnn_model.linear.layer.load_state_dict(
+        #         pretrain_lora_model.profile_cnn_model.linear.layer.state_dict()
+        #     )
+        # elif isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead):
+        #     acc_model.profile_cnn_model.adjustment_footprint.load_state_dict(
+        #         pretrain_lora_model.profile_cnn_model.adjustment_footprint.state_dict()
+        #     )
+        #     acc_model.profile_cnn_model.adjustment_count.load_state_dict(
+        #         pretrain_lora_model.profile_cnn_model.adjustment_count.state_dict()
+        #     )
         #
-        # acc_model.profile_cnn_model.adjustment_footprint.load_state_dict(
-        #     pretrain_lora_model.profile_cnn_model.adjustment_footprint.state_dict()
-        # )
-        # acc_model.profile_cnn_model.adjustment_count.load_state_dict(
-        #     pretrain_lora_model.profile_cnn_model.adjustment_count.state_dict()
-        # )
+        #     acc_model.profile_cnn_model.footprints_head.conv_layer.layer.load_state_dict(
+        #         pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer.layer.state_dict()
+        #     )
+        #     acc_model.profile_cnn_model.footprints_head.linear.layer.load_state_dict(
+        #         pretrain_lora_model.profile_cnn_model.footprints_head.linear.layer.state_dict()
+        #     )
+        # else:
+        #     print("profile cnn model not supported", type(acc_model.profile_cnn_model))
+        # #
+        # # acc_model.profile_cnn_model.adjustment_footprint.load_state_dict(
+        # #     pretrain_lora_model.profile_cnn_model.adjustment_footprint.state_dict()
+        # # )
+        # # acc_model.profile_cnn_model.adjustment_count.load_state_dict(
+        # #     pretrain_lora_model.profile_cnn_model.adjustment_count.state_dict()
+        # # )
+        # #
+        # # acc_model.profile_cnn_model.footprints_head.conv_layer.layer.load_state_dict(
+        # #     pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer.layer.state_dict()
+        # # )
+        # # acc_model.profile_cnn_model.footprints_head.linear.layer.load_state_dict(
+        # #     pretrain_lora_model.profile_cnn_model.footprints_head.linear.layer.state_dict()
+        # # )
         #
-        # acc_model.profile_cnn_model.footprints_head.conv_layer.layer.load_state_dict(
-        #     pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer.layer.state_dict()
-        # )
-        # acc_model.profile_cnn_model.footprints_head.linear.layer.load_state_dict(
-        #     pretrain_lora_model.profile_cnn_model.footprints_head.linear.layer.state_dict()
-        # )
-
-        for flag, module, pretrain_module in [
-            (
-                config["lora_dna_cnn"],
-                [acc_model.dna_cnn_model.conv],
-                [pretrain_lora_model.dna_cnn_model.conv],
-            ),
-            (
-                config["lora_dilated_cnn"],
-                [l.module.conv1 for l in acc_model.hidden_layer_model.layers],
-                [l.module.conv1 for l in pretrain_lora_model.hidden_layer_model.layers],
-            ),
-            (
-                config["lora_pff_cnn"],
-                [l.module.conv2 for l in acc_model.hidden_layer_model.layers],
-                [l.module.conv2 for l in pretrain_lora_model.hidden_layer_model.layers],
-            ),
-            (
-                config["lora_profile_cnn"],
-                [
-                    (
-                        acc_model.profile_cnn_model.footprints_head.conv_layer
-                        if isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead)
-                        else acc_model.profile_cnn_model.conv_layer
-                    )
-                ],
-                [
-                    (
-                        pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer
-                        if isinstance(
-                            pretrain_lora_model.profile_cnn_model, BiasAdjustedFootprintsHead
-                        )
-                        else pretrain_lora_model.profile_cnn_model.conv_layer
-                    )
-                ],
-            ),
-            (
-                config["lora_count_cnn"],
-                [
-                    (
-                        acc_model.profile_cnn_model.footprints_head.linear
-                        if isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead)
-                        else acc_model.profile_cnn_model.linear
-                    )
-                ],
-                [
-                    (
-                        pretrain_lora_model.profile_cnn_model.footprints_head.linear
-                        if isinstance(
-                            pretrain_lora_model.profile_cnn_model, BiasAdjustedFootprintsHead
-                        )
-                        else pretrain_lora_model.profile_cnn_model.linear
-                    )
-                ],
-            ),
-        ]:
-            if flag:
-                for m, prem in zip(module, pretrain_module):
-                    for i in range(len(m.A_embedding)):
-                        if not isinstance(m.A_embedding[i], nn.Embedding):
-                            m.A_embedding[i].load_state_dict(prem.A_embedding[i].state_dict())
-                    for i in range(len(m.B_embedding)):
-                        if not isinstance(m.B_embedding[i], nn.Embedding):
-                            m.B_embedding[i].load_state_dict(prem.B_embedding[i].state_dict())
-
-        acc_model.cuda()
+        # for flag, module, pretrain_module in [
+        #     (
+        #         config["lora_dna_cnn"],
+        #         [acc_model.dna_cnn_model.conv],
+        #         [pretrain_lora_model.dna_cnn_model.conv],
+        #     ),
+        #     (
+        #         config["lora_dilated_cnn"],
+        #         [l.module.conv1 for l in acc_model.hidden_layer_model.layers],
+        #         [l.module.conv1 for l in pretrain_lora_model.hidden_layer_model.layers],
+        #     ),
+        #     (
+        #         config["lora_pff_cnn"],
+        #         [l.module.conv2 for l in acc_model.hidden_layer_model.layers],
+        #         [l.module.conv2 for l in pretrain_lora_model.hidden_layer_model.layers],
+        #     ),
+        #     (
+        #         config["lora_profile_cnn"],
+        #         [
+        #             (
+        #                 acc_model.profile_cnn_model.footprints_head.conv_layer
+        #                 if isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead)
+        #                 else acc_model.profile_cnn_model.conv_layer
+        #             )
+        #         ],
+        #         [
+        #             (
+        #                 pretrain_lora_model.profile_cnn_model.footprints_head.conv_layer
+        #                 if isinstance(
+        #                     pretrain_lora_model.profile_cnn_model, BiasAdjustedFootprintsHead
+        #                 )
+        #                 else pretrain_lora_model.profile_cnn_model.conv_layer
+        #             )
+        #         ],
+        #     ),
+        #     (
+        #         config["lora_count_cnn"],
+        #         [
+        #             (
+        #                 acc_model.profile_cnn_model.footprints_head.linear
+        #                 if isinstance(acc_model.profile_cnn_model, BiasAdjustedFootprintsHead)
+        #                 else acc_model.profile_cnn_model.linear
+        #             )
+        #         ],
+        #         [
+        #             (
+        #                 pretrain_lora_model.profile_cnn_model.footprints_head.linear
+        #                 if isinstance(
+        #                     pretrain_lora_model.profile_cnn_model, BiasAdjustedFootprintsHead
+        #                 )
+        #                 else pretrain_lora_model.profile_cnn_model.linear
+        #             )
+        #         ],
+        #     ),
+        # ]:
+        #     if flag:
+        #         for m, prem in zip(module, pretrain_module):
+        #             for i in range(len(m.A_embedding)):
+        #                 if not isinstance(m.A_embedding[i], nn.Embedding):
+        #                     m.A_embedding[i].load_state_dict(prem.A_embedding[i].state_dict())
+        #             for i in range(len(m.B_embedding)):
+        #                 if not isinstance(m.B_embedding[i], nn.Embedding):
+        #                     m.B_embedding[i].load_state_dict(prem.B_embedding[i].state_dict())
+        #
+        # acc_model.cuda()
 
     print("model")
     print(acc_model)
@@ -503,12 +518,13 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
     )
     print("before training", val_loss, profile_pearson, across_pearson_fp, across_pearson_cov)
     # raise EOFError
+    acc_model.train()
     acc_model.fit(
         dispmodel,
         dataloader["train"],
         validation_data=dataloader["valid"],
         validation_size=(len(datasets["valid"].summits) // batch_size),
-        max_epochs=300,
+        max_epochs=300 if "epochs" not in config else config["epochs"],
         optimizer=optimizer,
         scheduler=scheduler,
         validation_freq=(len(datasets["train"].summits) // batch_size),
@@ -522,7 +538,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         use_wandb=enable_wandb,
         accumulate_grad=accumulate_grad,
         batch_size=batch_size,
-        coverage_warming=10 if lora_mode else 0,
+        coverage_warming=2 if lora_mode else 0,
     )
     if ema:
         del acc_model

@@ -538,11 +538,11 @@ class BiasAdjustedFootprintsHead(nn.Module):
 
     """
 
-    def __init__(self, footprints_head, coverages):
+    def __init__(self, footprints_head, bias_dim):
         super().__init__()
         self.footprints_head = footprints_head
         self.adjustment_footprint = nn.Sequential(
-            nn.Linear(in_features=coverages.weight.data.shape[-1], out_features=32, bias=True),
+            nn.Linear(in_features=bias_dim, out_features=32, bias=True),
             nn.GELU(),  # For non-linearity
             nn.Linear(in_features=32, out_features=1, bias=True),
         )
@@ -553,16 +553,14 @@ class BiasAdjustedFootprintsHead(nn.Module):
         self.adjustment_footprint[-1].bias.data = torch.tensor([1.0])
 
         # Assuming linear adjustment for counts
-        self.adjustment_count = nn.Linear(
-            in_features=coverages.weight.data.shape[-1], out_features=1, bias=True
-        )
+        self.adjustment_count = nn.Linear(in_features=bias_dim, out_features=1, bias=True)
         self.adjustment_count.weight.data = torch.tensor([[0.0]])
         self.adjustment_count.bias.data = torch.tensor([1.0])
-        self.coverages = coverages
+        # self.coverages = bias_dim
         self.adjust_foot = 1
         self.adjust_count = 1
 
-    def forward(self, X, cells=None, *args, **kwargs):
+    def forward(self, X, coverages=None, *args, **kwargs):
         """
 
         Parameters
@@ -579,42 +577,42 @@ class BiasAdjustedFootprintsHead(nn.Module):
         -------
 
         """
-        if cells is not None:
-            adjustment_foot = self.adjustment_footprint(self.coverages(cells))[
+        if coverages is not None:
+            adjustment_foot = self.adjustment_footprint(coverages)[
                 :, None
             ]  # because footprint has shape of (..., bp, scales)
-            adjustment_count = self.adjustment_count(self.coverages(cells))[
+            adjustment_count = self.adjustment_count(coverages)[
                 :, 0
             ]  # because count has shape of (bs, )
         else:
             adjustment_foot = self.adjust_foot
             adjustment_count = self.adjust_count
-        X_bindingscore, X_count = self.footprints_head(X, cells, *args, **kwargs)
+        X_bindingscore, X_count = self.footprints_head(X, *args, **kwargs)
         X_bindingscore = X_bindingscore * adjustment_foot
         X_count = X_count * adjustment_count
 
         return X_bindingscore, X_count
 
-    def collapse_layer(self, cell):
+    def collapse_layer(self, coverage):
         """
         Collapse the adjustment to single values. This is used such that the LoRA model or a giant model for all cells would be collapsed to a single model for a specific cell or the average for a set of cells.
 
         Parameters
         ----------
-        cell
+        coverage
 
         Returns
         -------
 
         """
 
-        if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
-            raise ValueError("cell must be an integer")
-        if type(cell) == int:
-            cell = [cell]
-        cell = torch.tensor(cell).long().to(self.adjustment_footprint[0].weight.data.device)
-        self.adjust_foot = self.adjustment_footprint(self.coverages(cell))[:, 0].mean(axis=0)
-        self.adjust_count = self.adjustment_count(self.coverages(cell))[:, 0].mean(axis=0)
+        # if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
+        #     raise ValueError("cell must be an integer")
+        # if type(coverage) not in [list, np.ndarray, torch.Tensor]:
+        #     coverage = [coverage]
+        coverage = coverage.to(self.adjustment_footprint[0].weight.data.device)
+        self.adjust_foot = self.adjustment_footprint(coverage)[:, 0].mean(axis=0)
+        self.adjust_count = self.adjustment_count(coverage)[:, 0].mean(axis=0)
 
         # print("collapsing", self.adjust_foot, self.adjust_count)
 
@@ -717,10 +715,10 @@ class Conv1dLoRA(nn.Module):
     ----------
     layer: Conv1dWrapper
         the layer to be wrapped with LoRA
-    A_embedding: nn.Module
-        The embedding module to get the embeddings for A
-    B_embedding: nn.Module
-        The embedding module to get the embeddings for B
+    A_embedding_dim_: int
+        The embedding dimension for A
+    B_embedding_dim: int
+        The embedding dimension for B
     r: int
         LoRA rank
     alpha: float
@@ -734,8 +732,8 @@ class Conv1dLoRA(nn.Module):
     def __init__(
         self,
         layer,
-        A_embedding=None,
-        B_embedding=None,
+        A_embedding_dim=None,
+        B_embedding_dim=None,
         r=8,
         alpha=None,
         hidden_dim=None,
@@ -753,8 +751,8 @@ class Conv1dLoRA(nn.Module):
         self.padding = self.pretrain_conv.padding[0]
         self.groups = self.pretrain_conv.groups
 
-        self.A_embedding_dim = A_embedding.embedding_dim
-        self.B_embedding_dim = B_embedding.embedding_dim
+        self.A_embedding_dim = A_embedding_dim
+        self.B_embedding_dim = B_embedding_dim
 
         if alpha is None:
             alpha = r
@@ -769,7 +767,7 @@ class Conv1dLoRA(nn.Module):
 
         layers = (
             [
-                A_embedding,
+                # A_embedding,
                 nn.Linear(in_features=self.A_embedding_dim, out_features=self.hidden_dim),
                 nn.BatchNorm1d(self.hidden_dim),
                 nn.GELU(),
@@ -797,7 +795,7 @@ class Conv1dLoRA(nn.Module):
 
         layers = (
             [
-                B_embedding,
+                # B_embedding,
                 nn.Linear(in_features=self.B_embedding_dim, out_features=self.hidden_dim),
                 nn.BatchNorm1d(self.hidden_dim),
                 nn.GELU(),
@@ -836,22 +834,10 @@ class Conv1dLoRA(nn.Module):
                         self.B_embedding[i][j].bias.data[...] = 0
                         self.B_embedding[i][j].weight.data[...] = 0
 
-        # test A_output distribution
-        with torch.no_grad():
-            self.A_embedding.eval()
-            self.A_embedding.cuda()
-            test_cell_num = min(100, self.A_embedding[0].weight.shape[0])
-            A_output = self.A_embedding(torch.arange(test_cell_num).long().cuda())
-            mean, std = A_output.mean(), A_output.std()
-            print("A_output mean: {}, std: {}".format(mean, std))
-            # self.scale *= 1 / (std * r)
-            rescale_factor = 1 / (std)
-            self.A_embedding[0].weight.data[...] *= rescale_factor  # rescale the embedding matrix
-
     @torch.no_grad()
-    def collapse_layer(self, cell):
+    def collapse_layer(self, A_cell, B_cell):
         """
-        Collapse the LoRA layer to a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at a specific cell or the average of a set of cells
+        Collapse the LoRA layer to a constant conv1d layer with the weight matrix collapsed from the A and B embeddings at a specific cell embedding or the average of a set of cell embeddings
         Parameters
         ----------
         cell
@@ -861,14 +847,18 @@ class Conv1dLoRA(nn.Module):
 
         """
 
-        if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
-            raise ValueError("cell must be an integer")
-        if type(cell) == int:
-            cell = [cell]
-        cell = torch.tensor(cell).long().to(self.A_embedding[0].weight.data.device)
+        # if type(cell) not in [int, list, np.ndarray, torch.Tensor]:
+        #     raise ValueError("cell must be an integer")
+        # if type(A_cell) not in [list, np.ndarray, torch.Tensor]:
+        #     A_cell = [A_cell]
+        # if type(B_cell) not in [list, np.ndarray, torch.Tensor]:
+        #     B_cell = [B_cell]
 
-        A = self.A_embedding(cell).mean(dim=0)  # (shape of self.layer_dim_in * r)
-        B = self.B_embedding(cell).mean(
+        A_cell = A_cell.to(self.A_embedding[0].weight.data.device)
+        B_cell = B_cell.to(self.B_embedding[0].weight.data.device)
+
+        A = self.A_embedding(A_cell).mean(dim=0)  # (shape of self.layer_dim_in * r)
+        B = self.B_embedding(B_cell).mean(
             dim=0
         )  # (shape of self.layer_dim_out * r * kernel_size / groups)
 
@@ -892,9 +882,11 @@ class Conv1dLoRA(nn.Module):
         new_layer.conv.weight.data[...] = new_layer.conv.weight.data + weight_scaled
         return new_layer
 
-    def forward(self, X, cells, modes=None):
-        A = self.A_embedding(cells)  # (shape of (bs, self.layer_dim_in * r)
-        B = self.B_embedding(cells)  # (shape of (bs, self.layer_dim_out * r * kernel_size / groups)
+    def forward(self, X, A_cells, B_cells, modes=None, **kwargs):
+        A = self.A_embedding(A_cells)  # (shape of (bs, self.layer_dim_in * r)
+        B = self.B_embedding(
+            B_cells
+        )  # (shape of (bs, self.layer_dim_out * r * kernel_size / groups)
         if self.kernel_size == 1 and self.groups == 1:
             # When kernel_size == 1, the convolution is actually a linear layer, take a short path
             A = A.reshape((-1, self.r, self.layer_dim_in))

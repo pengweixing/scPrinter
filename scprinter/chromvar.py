@@ -237,8 +237,11 @@ def compute_deviations(adata, chunk_size: int = 10000, device="cuda"):
         temp_adata = adata[start:end].copy()
         X_chunk = temp_adata.X
         expectation_obs_chunk = backend.asarray(expectation_obs[start:end])
-        if sparse.isspmatrix(X_chunk) and device == "cuda":
-            X_chunk = scipy_to_cupy_sparse(X_chunk)
+        if sparse.isspmatrix(X_chunk):
+            if device == "cuda":
+                X_chunk = scipy_to_cupy_sparse(X_chunk)
+            else:
+                X_chunk = X_chunk.tocsr()
         else:
             X_chunk = backend.array(X_chunk)
         res = _compute_deviations(

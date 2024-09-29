@@ -11,7 +11,7 @@ from pynndescent import NNDescent
 from scipy.sparse import csr_matrix as scipy_csr_matrix
 from tqdm.auto import tqdm, trange
 
-from scprinter.utils import GC_content, get_peak_bias, regionparser
+from scprinter.utils import get_peak_bias
 
 
 def sample_bg_peaks(
@@ -23,6 +23,7 @@ def sample_bg_peaks(
     w=0.1,
     bs=50,
     n_jobs=1,
+    gc_bias=True,
 ):
     """
     This function samples background peaks for chromVAR analysis in single-cell ATAC-seq data.
@@ -50,21 +51,31 @@ def sample_bg_peaks(
         "chromvar" mode.
     n_jobs : int, optional
         Number of jobs to run in parallel for nearest neighbor calculation. Defaults to 1.
+    gc_bias : bool, optional
+        Whether to consider GC bias in sampling background peaks. Defaults to True.
 
     Returns
     -------
     array-like
         Array containing indices of sampled background peaks for each peak.
     """
-    get_peak_bias(adata, genome)
+    if gc_bias:
+        get_peak_bias(adata, genome)
     assert method in ["nndescent", "chromvar"], "Method not supported"
     reads_per_peak = adata.X.sum(axis=0)
     assert np.min(reads_per_peak) > 0, "Some peaks have no reads"
     reads_per_peak = np.log10(reads_per_peak)
     reads_per_peak = np.array(reads_per_peak).reshape((-1))
-    mat = np.array([reads_per_peak, adata.var["gc_content"].values])
-    chol_cov_mat = np.linalg.cholesky(np.cov(mat))
-    trans_norm_mat = scipy.linalg.solve_triangular(a=chol_cov_mat, b=mat, lower=True).transpose()
+    if gc_bias:
+        mat = np.array([reads_per_peak, adata.var["gc_content"].values])
+        chol_cov_mat = np.linalg.cholesky(np.cov(mat))
+        trans_norm_mat = scipy.linalg.solve_triangular(
+            a=chol_cov_mat, b=mat, lower=True
+        ).transpose()
+    else:
+        mat = np.array([reads_per_peak])
+        trans_norm_mat = mat.transpose()
+
     print("Sampling nearest neighbors")
     if bg_set is not None:
         assert (
@@ -89,6 +100,9 @@ def sample_bg_peaks(
         adata.varm["bg_peaks"] = knn_idx
 
     return knn_idx
+
+
+sample_bg_peaks2 = sample_bg_peaks
 
 
 def create_bins_and_sample_background(trans_norm_mat, bs, w, niterations):

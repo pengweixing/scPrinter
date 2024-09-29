@@ -340,6 +340,8 @@ def regionparser(
     regions.columns = ["Chromosome", "Start", "End"] + list(regions.columns)[3:]
     if width is not None:
         regions = resize_bed_df(regions, width, True)
+    regions["Start"] = regions["Start"].astype("int")
+    regions["End"] = regions["End"].astype("int")
     return regions
 
 

@@ -21,6 +21,7 @@ import pandas as pd
 import pyranges
 import torch
 from scipy.sparse import csc_matrix, vstack
+from scipy.stats import zscore
 from sklearn.metrics import pairwise_distances
 from tqdm.auto import tqdm, trange
 
@@ -1350,6 +1351,8 @@ def seq_lora_model_config(
     fold=0,
     model_config: dict | str = {},
     additional_lora_config={},
+    additional_group_attr: np.ndarray | pd.DataFrame = None,
+    additional_group_bias_attr: np.ndarray | pd.DataFrame = None,
     path_swap=None,
     config_save_path: str | Path = None,
 ):
@@ -1381,6 +1384,10 @@ def seq_lora_model_config(
         The fold for splitting the data. Default is 0.
     model_config : dict | str | Path
         The model_config you used to for the pretrained seq2PRINT model
+    additional_group_attr : np.ndarray | pd.DataFrame
+        The additional group attributes for the LoRA model. If it is a numpy array, it should have the shape of (n_groups, n_features).
+    additional_group_bias_attr: np.ndarray | pd.DataFrame
+        The additional group bias attributes for the LoRA model. If it is a numpy array, it should have the shape of (n_groups, n_features).
     additional_lora_config : dict, optional
         Additional configurations for the LoRA model. Default is an empty dictionary.
     path_swap: tuple, optional
@@ -1407,6 +1414,14 @@ def seq_lora_model_config(
     assert len(group_names) == len(
         cell_grouping
     ), "group_names and cell_grouping must have the same length"
+    if additional_group_attr is not None:
+        assert len(additional_group_attr) == len(
+            group_names
+        ), "additional_group_attr must have the same length as group_names"
+    if additional_group_bias_attr is not None:
+        assert len(additional_group_bias_attr) == len(
+            group_names
+        ), "additional_group_bias_attr must have the same length as group_names"
 
     if type(embeddings) is pd.DataFrame:
         cell_all = np.concatenate([np.array(x) for x in cell_grouping])
@@ -1440,6 +1455,27 @@ def seq_lora_model_config(
     embed_path = os.path.join(printer.file_path, f"{model_name}_grp2embeddings.pkl")
     cov_path = os.path.join(printer.file_path, f"{model_name}_grp2covs.pkl")
     template_json = copy.deepcopy(model_config)
+
+    default_lora_json = {
+        "lora_rank": 32,
+        "lora_hidden_dim": 256,
+        "lora_dna_cnn": True,
+        "lora_dilated_cnn": True,
+        "lora_pff_cnn": True,
+        "lora_profile_cnn": True,
+        "lora_count_cnn": True,
+        "n_lora_layers": 0,
+        "mask_cov": False,
+        "accumulate_grad_batches": 8,
+        "dataloader_mode": "uniform",
+        "cell_sample": 10,
+        "coverage_in_lora": True,
+        "lr": 3e-5,
+    }
+    # Once upon a time, I used lr=3e-4....
+    for key in default_lora_json:
+        template_json[key] = default_lora_json[key]
+
     for key in additional_lora_config:
         template_json[key] = additional_lora_config[key]
     template_json["savename"] = model_name + f"_fold{fold}"
@@ -1467,30 +1503,17 @@ def seq_lora_model_config(
                 embed.append(embeddings[ids].mean(axis=0))
             cov.append(np.log10(np.array(coverage_gw[ids]).sum()))
         bc, embed, cov = (np.array(bc, dtype="object"), np.array(embed), np.array(cov)[:, None])
+        if additional_group_attr is not None:
+            embed = np.concatenate([embed, additional_group_attr], axis=-1)
+        if additional_group_bias_attr is not None:
+            cov = np.concatenate([cov, additional_group_bias_attr], axis=-1)
         # embed = np.concatenate([embed, cov[:, None]], axis=-1)
+        embed = zscore(embed, axis=0)
+        cov = zscore(cov, axis=0)
         pickle.dump(bc, open(bc_path, "wb"))
         pickle.dump(embed, open(embed_path, "wb"))
         pickle.dump(cov, open(cov_path, "wb"))
 
-    default_lora_json = {
-        "lora_rank": 32,
-        "lora_hidden_dim": 256,
-        "lora_dna_cnn": True,
-        "lora_dilated_cnn": True,
-        "lora_pff_cnn": True,
-        "lora_profile_cnn": True,
-        "lora_count_cnn": True,
-        "n_lora_layers": 0,
-        "mask_cov": False,
-        "accumulate_grad_batches": 8,
-        "dataloader_mode": "uniform",
-        "cell_sample": 10,
-        "coverage_in_lora": True,
-    }
-    # Once upon a time, I used lr=3e-4....
-    for key in default_lora_json:
-        if key not in template_json:
-            template_json[key] = default_lora_json[key]
     if config_save_path is not None:
         with open(config_save_path, "w") as f:
             json.dump(template_json, f, indent=4, cls=NumpyEncoder)
@@ -1498,6 +1521,7 @@ def seq_lora_model_config(
 
 
 def seq_lora_slice_model_config(
+    region_path: str | Path,
     lora_config: dict | str,
     pretrained_lora_model,
     model_name=None,
@@ -1512,6 +1536,8 @@ def seq_lora_slice_model_config(
 
     Parameters
     ----------
+    region_path: str | Path
+        The path to the peak file
     lora_config: dict | str
         The lora configuration dictionary or the path to the configuration dictionary
     pretrained_lora_model: str | Path
@@ -1561,6 +1587,7 @@ def seq_lora_slice_model_config(
         lora_config[key] = additional_lora_config[key]
     lora_config["group_names"] = finetune_group_names
     lora_config["savename"] = f"{model_name}_fold{fold}"
+    lora_config["peaks"] = region_path.replace(before, after)
     if config_save_path is not None:
         with open(config_save_path, "w") as f:
             json.dump(lora_config, f, indent=4, cls=NumpyEncoder)
@@ -1899,6 +1926,7 @@ def seq_tfbs_seq2print(
     group_names: list | str | None = None,
     save_path: str | Path = None,
     overwrite_seqattr=False,
+    post_normalize=False,
     verbose: bool = True,
     launch: bool = False,
     return_adata=False,
@@ -1932,6 +1960,8 @@ def seq_tfbs_seq2print(
         The path to save the TF binding scores
     overwrite_seqattr: bool
         Whether to overwrite the existing seqattr files (If you change the regions but reuse the same grouping, set this as True)
+    post_normalize: bool
+        Whether to normalize the seq_attr for each lora model (to further control coverage bias)
     verbose: bool
         The command strings will always be printed, this controls whether to print additional information.
     launch: bool
@@ -2016,8 +2046,8 @@ def seq_tfbs_seq2print(
                         f"model_{id}." + template if id is not None else template,
                     )
                     seq_attr_path_npz = seq_attr_path.replace(".bigwig", ".npz")
-                    if os.path.exists(seq_attr_path_npz):
-                        read_numpy = True
+                    # if os.path.exists(seq_attr_path_npz):
+                    #     read_numpy = True
 
                     if (not os.path.exists(seq_attr_path)) and (
                         not os.path.exists(seq_attr_path_npz)
@@ -2085,6 +2115,8 @@ def seq_tfbs_seq2print(
         command += f" --collection_name {save_key}"
     if read_numpy:
         command += " --read_numpy "
+    if post_normalize:
+        command += " --post_normalize "
     if verbose:
         if launch:
             print(launch_template)
@@ -2175,7 +2207,7 @@ def seq_denovo_seq2print(
     ohe_path = f"{region_path}_ohe.npz"
     if not os.path.exists(ohe_path) | overwrite:
         ohe_for_modisco(region_path, genome, model=model_path[0], save_path=ohe_path)
-
+    all_pass = True
     seq_attrs = []
     for model in model_path:
         seq_attr_path = os.path.join(
@@ -2189,6 +2221,7 @@ def seq_denovo_seq2print(
         seq_attrs.append(seq_attr_path)
         if os.path.exists(seq_attr_path):
             continue
+        all_pass = False
         if verbose:
             print("Generating seq attr first")
         seq_attr_seq2print(
@@ -2203,6 +2236,10 @@ def seq_denovo_seq2print(
             launch=launch,
             save_key=attr_key,
         )
+    if launch:
+        all_pass = True
+    if not all_pass:
+        return
     if not os.path.exists(save_path) | overwrite:
         modisco_helper(
             ohe=ohe_path,
@@ -2212,7 +2249,6 @@ def seq_denovo_seq2print(
             n=n_seqlets,
             w=modisco_window,
             launch=launch,
-            save_key=attr_key,
         )
 
 
@@ -2319,19 +2355,24 @@ def modisco_helper(
 
 
 def delta_effects_seq2print(
-    models: str | list[str] | Path | list[Path] = None,
+    model_path: str | Path | list[str | Path],
     genome: Genome = None,
     region_path: str = None,
     motifs: Motifs | str = None,
+    motif_sample_mode: Literal["argmax", "multinomial"] = "argmax",
+    lora_ids: list | None = None,
     prefix: str = "",
     sample_num=25000,
-    batch_size=256,
-    device="cuda",
+    gpus: int | list[int] | None = None,
+    collapse_footprint_across_bins=False,
+    random_seq=False,
+    overwrite=False,
+    verbose=False,
+    launch=False,
     flank=200,
     vmin=-0.3,
     vmax=0.3,
     save_path=None,
-    delta_effects=None,
     plot=True,
 ):
     """
@@ -2372,21 +2413,60 @@ def delta_effects_seq2print(
     -------
 
     """
-    if delta_effects is not None:
-        de = delta_effects
+    names = []
+    if isinstance(motifs, str):
+        with h5py.File(motifs, "r") as f:
+            for group in ["pos_patterns", "neg_patterns"]:
+                for key in f[group].keys():
+                    nn = f"{prefix}_{group}.{key}"
+                    names.append(nn)
+    elif isinstance(motifs, Motifs):
+        for motif in motifs.all_motifs:
+            names.append(motif.name)
     else:
-        de = interpretation.delta_effects.get_delta_effects(
-            models=models,
+        names = list(motifs.keys())
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+    if os.path.exists(os.path.join(save_path, "delta_effects.npy")) and not overwrite:
+        delta_effects_fp, delta_effects_count = np.load(
+            os.path.join(save_path, "delta_effects.npy"), allow_pickle=True
+        )
+    else:
+        interpretation.delta_effects.get_delta_effects(
+            model_path=model_path,
             genome=genome,
-            regions=region_path,
+            region_path=region_path,
             motifs=motifs,
+            motif_sample_mode=motif_sample_mode,
+            lora_ids=lora_ids,
             prefix=prefix,
             sample_num=sample_num,
-            batch_size=batch_size,
-            device=device,
+            gpus=gpus,
+            collapse_footprint_across_bins=collapse_footprint_across_bins,
+            random_seq=random_seq,
+            verbose=verbose,
+            launch=launch,
+            save_path=save_path,
         )
+        if launch:
+            delta_effects_fp, delta_effects_count = np.load(
+                os.path.join(save_path, "delta_effects.npy"), allow_pickle=True
+            )
+        # shape (5, 1, 330, 99, 800) (5, 1, 330)
+        # (#models, #ids, #motifs, #scales, #bins (optional))
+        else:
+            print("Please launch the delta effects calculation first")
+            return
+    delta_effects_fp = delta_effects_fp.mean(axis=0)  # average across models
+    delta_effects_count = delta_effects_count.mean(axis=0)  # average across models
+
+    de = {}
+    for j, name in enumerate(names):
+        de[name] = [delta_effects_fp[:, j], delta_effects_count[:, j]]
+
     if vmin == "auto" or vmax == "auto":
-        vs = [de[k].reshape((-1)) for k in de]
+        vs = [de[k][0].reshape((-1)) for k in de]
         vs = np.concatenate(vs)
         cutoff = min(np.abs(np.quantile(vs, 0.05)), np.abs(np.quantile(vs, 0.95)))
         cutoff = int(cutoff * 100) / 100
@@ -2394,38 +2474,44 @@ def delta_effects_seq2print(
         vmax = cutoff
         print("Using vmin/vmax:", vmin, vmax)
     if plot:
+        if lora_ids is not None:
+            print("Currently not supporting lora model for plotting delta effects")
+            return de
         interpretation.plot_delta_effects(
-            de, flank=flank, vmin=vmin, vmax=vmax, save_path=save_path
+            {k: de[k][0][0] for k in de}, flank=flank, vmin=vmin, vmax=vmax, save_path=save_path
         )
     return de
 
 
 def modisco_report(
-    modisco_h5: Path,
+    modisco_h5: str | Path | list[Path],
     save_path: str | Path,
     meme_motif: os.PathLike | Literal["human", "mouse"],
-    delta_effect_path: str | Path = None,
-    delta_effect_prefix="",
+    delta_effect_path: str | Path | list[Path] = None,
+    delta_effect_prefix: str | list[str] = "",
     is_writing_tomtom_matrix: bool = True,
     top_n_matches=3,
     trim_threshold=0.3,
     trim_min_length=3,
+    selected_patterns: list[str] | list[list[str]] | None = None,
 ):
     """
     Create the modisco report that contains the motif logos, the motif matches, the delta effects.
 
     Parameters
     ----------
-    modisco_h5: Path
-        The path to the modisco h5 file
+    modisco_h5: str | Path | list[Path]
+        The path to the modisco h5 file(s)
     save_path: str | Path
         The path to save the modisco report
     meme_motif: os.PathLike | Literal ['human', 'mouse']
         The path to a motif database in meme format or use the default human/mouse FigR motif database
     delta_effect_path: str | Path
         The path to the delta effects file. This should be your save_path argument passed to `scp.tl.delta_effects_seq2print`
+        When provided as a list, make it the same length as the modisco_h5
     delta_effect_prefix: str
-        The prefix for the denovo motifs if any. This should be the same as the prefix argument passed to `scp.tl.delta_effects_seq2print`
+        The prefix for the denovo motifs if any. This should be the same as the prefix argument passed to `scp.tl.delta_effects_seq2print`.
+        When provided as a list, make it the same length as the modisco_h5
     is_writing_tomtom_matrix: bool
         Whether to write the tomtom matrix
     top_n_matches: int
@@ -2434,7 +2520,8 @@ def modisco_report(
         The threshold for trimming the motifs
     trim_min_length: int
         The minimum length for trimming the motifs
-
+    selected_patterns: str | list[str] | None
+        The selected patterns to plot. If None, all patterns will be plotted. If a list of strings, only the patterns in the list will be plotted. e.g. ['pos_patterns.pattern_60', 'pos_patterns.pattern_4', 'pos_patterns.pattern_2', 'pos_patterns.pattern_27']
     Returns
     -------
 
@@ -2442,22 +2529,35 @@ def modisco_report(
     """
     output_dir = os.path.dirname(save_path)
     save_name = os.path.basename(save_path)
-    img_path_suffix = os.path.join(output_dir, f"{save_name}_figs")
+
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    if not os.path.exists(img_path_suffix):
-        os.makedirs(img_path_suffix)
+
     if type(meme_motif) is str:
         if meme_motif == "human":
             meme_motif = (FigR_motifs_human_meme,)
         elif meme_motif == "mouse":
             meme_motif = FigR_motifs_mouse_meme
 
+    if type(modisco_h5) is not list:
+        modisco_h5 = [modisco_h5]
+    if type(delta_effect_path) is not list:
+        delta_effect_path = [delta_effect_path]
+    if type(delta_effect_prefix) is str:
+        delta_effect_prefix = [delta_effect_prefix]
+    if selected_patterns is None:
+        selected_patterns = [None] * len(modisco_h5)
+    elif type(selected_patterns[0]) is str:
+        selected_patterns = [selected_patterns]
+    img_path_suffixs = [os.path.join(output_dir, f"{h5}_figs") for h5 in modisco_h5]
+    for img_path_suffix in img_path_suffixs:
+        if not os.path.exists(img_path_suffix):
+            os.makedirs(img_path_suffix)
     interpretation.modisco_report.report_motifs(
         modisco_h5,
         output_dir,
         save_name,
-        img_path_suffix,
+        img_path_suffixs,
         meme_motif,
         is_writing_tomtom_matrix,
         top_n_matches,
@@ -2465,4 +2565,5 @@ def modisco_report(
         delta_effect_prefix,
         trim_threshold,
         trim_min_length,
+        selected_patterns,
     )

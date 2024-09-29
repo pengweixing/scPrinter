@@ -554,7 +554,7 @@ class BiasAdjustedFootprintsHead(nn.Module):
 
         # Assuming linear adjustment for counts
         self.adjustment_count = nn.Linear(in_features=bias_dim, out_features=1, bias=True)
-        self.adjustment_count.weight.data = torch.tensor([[0.0]])
+        self.adjustment_count.weight.data = torch.zeros_like(self.adjustment_count.weight.data)
         self.adjustment_count.bias.data = torch.tensor([1.0])
         # self.coverages = bias_dim
         self.adjust_foot = 1
@@ -823,16 +823,19 @@ class Conv1dLoRA(nn.Module):
 
         # When combined, this will lead to a weight matrix of shape (layer_dim_out, layer_dim_in, kernel_size)
 
+    @torch.no_grad()
+    def reset_B(self):
         ## Make sure B starts as all zeros:
+        # Only make the last layer to be 0
         for i in range(len(self.B_embedding)):
             if isinstance(self.B_embedding[i], nn.Linear):
-                self.B_embedding[i].bias.data[...] = 0
-                self.B_embedding[i].weight.data[...] = 0
+                last_layer = self.B_embedding[i]
             elif isinstance(self.B_embedding[i], nn.Sequential):
                 for j in range(len(self.B_embedding[i])):
                     if isinstance(self.B_embedding[i][j], nn.Linear):
-                        self.B_embedding[i][j].bias.data[...] = 0
-                        self.B_embedding[i][j].weight.data[...] = 0
+                        last_layer = self.B_embedding[i][j]
+        last_layer.bias.data[...] = 0
+        last_layer.weight.data[...] = 0
 
     @torch.no_grad()
     def collapse_layer(self, A_cell, B_cell):

@@ -125,12 +125,13 @@ def validation_step_footprint(model, validation_data, validation_size, dispmodel
     )
 
 
-def adjust_embedding_scale(embedding, coverages, coverage_in_lora, A_embedding):
+def adjust_embedding_scale(rank, embedding, coverages, coverage_in_lora, A_embedding, B_embedding):
     # test A_output distribution
     with torch.no_grad():
 
         embedding.eval()
         A_embedding.eval()
+        B_embedding.eval()
         test_cell_num = min(100, embedding.weight.shape[0])
 
         A_cells = embedding(torch.arange(test_cell_num).long())
@@ -141,11 +142,19 @@ def adjust_embedding_scale(embedding, coverages, coverage_in_lora, A_embedding):
         if coverage_in_lora:
             A_cells = torch.cat([A_cells, coverages_cells], dim=-1)
         A_output = A_embedding(A_cells)
+        B_output = B_embedding(A_cells)
         mean, std = A_output.mean(), A_output.std()
-
         print("A_output mean: {}, std: {}".format(mean, std))
+        mean, std = B_output.mean(), B_output.std()
+        print("B_output mean: {}, std: {}".format(mean, std))
+
+        A_output = A_output.reshape((test_cell_num, -1, rank))
+        B_output = B_output.reshape((test_cell_num, rank, -1))
+        lora_out = torch.bmm(A_output, B_output)
+        mean, std = lora_out.mean(), lora_out.std()
+        print("lora_out mean: {}, std: {}".format(mean, std))
         # self.scale *= 1 / (std * r)
-        rescale_factor = 1 / (std)
+        rescale_factor = math.sqrt(1 / (std))
         embedding.weight.data[...] *= rescale_factor
         if coverage_in_lora:
             coverages.weight.data[...] *= rescale_factor
@@ -250,11 +259,14 @@ class seq2PRINT(nn.Module):
                 n_layers=n_lora_layers,
             )
             rescale_factor = adjust_embedding_scale(
+                rank,
                 self.embeddings,
                 self.coverages,
                 self.coverage_in_lora,
                 self.dna_cnn_model.conv.A_embedding,
+                self.dna_cnn_model.conv.B_embedding,
             )
+            self.dna_cnn_model.conv.reset_B()
 
         hidden_layers = self.hidden_layer_model.layers
         for i in range(len(hidden_layers)):
@@ -269,11 +281,14 @@ class seq2PRINT(nn.Module):
                     n_layers=n_lora_layers,
                 )
                 rescale_factor = adjust_embedding_scale(
+                    rank,
                     self.embeddings,
                     self.coverages,
                     self.coverage_in_lora,
                     hidden_layers[i].module.conv1.A_embedding,
+                    hidden_layers[i].module.conv1.B_embedding,
                 )
+                hidden_layers[i].module.conv1.reset_B()
 
             if lora_pff_cnn:
                 assert self.embeddings is not None, "Embeddings must be provided for LoRA"
@@ -286,11 +301,14 @@ class seq2PRINT(nn.Module):
                     n_layers=n_lora_layers,
                 )
                 rescale_factor = adjust_embedding_scale(
+                    rank,
                     self.embeddings,
                     self.coverages,
                     self.coverage_in_lora,
                     hidden_layers[i].module.conv2.A_embedding,
+                    hidden_layers[i].module.conv2.B_embedding,
                 )
+                hidden_layers[i].module.conv2.reset_B()
 
         if lora_profile_cnn:
             assert self.embeddings is not None, "Embeddings must be provided for LoRA"
@@ -303,11 +321,14 @@ class seq2PRINT(nn.Module):
                 n_layers=n_lora_layers,
             )
             rescale_factor = adjust_embedding_scale(
+                rank,
                 self.embeddings,
                 self.coverages,
                 self.coverage_in_lora,
                 self.profile_cnn_model.conv_layer.A_embedding,
+                self.profile_cnn_model.conv_layer.B_embedding,
             )
+            self.profile_cnn_model.conv_layer.reset_B()
 
         # Historical code
         # if isinstance(self.profile_cnn_model.linear, nn.Linear):
@@ -331,11 +352,14 @@ class seq2PRINT(nn.Module):
                 n_layers=n_lora_layers,
             )
             rescale_factor = adjust_embedding_scale(
+                1,
                 self.embeddings,
                 self.coverages,
                 self.coverage_in_lora,
                 self.profile_cnn_model.linear.A_embedding,
+                self.profile_cnn_model.linear.B_embedding,
             )
+            self.profile_cnn_model.linear.reset_B()
 
         # Bias adjusted footprints head should come after the LoRA model
         if self.coverages is not None:
@@ -840,7 +864,7 @@ class seq2PRINT(nn.Module):
                 )
 
         if return_best:
-            self.load_state_dict(torch.load(savename)["state_dict"])
+            self.load_state_dict(torch.load(savename, weights_only=False)["state_dict"])
             print("loaded best model")
 
         return epoch, loss_history

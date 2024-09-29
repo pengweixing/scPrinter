@@ -13,6 +13,7 @@ from scprinter.seq.Models import *
 # multiple savename error
 
 
+@torch.no_grad()
 def forward_pass_model(feats, model):
     feats = torch.as_tensor(feats).float().cuda()[:, None, :]
     feats_rev = torch.flip(feats, [2])
@@ -27,7 +28,7 @@ def forward_pass_model(feats, model):
     return pred
 
 
-def bigwig_reader(bws, summits, signal_window, batch_size):
+def bigwig_reader(bws, summits, signal_window, batch_size, post_normalize):
     # bws are list of lists:
     feats = []
     bar = trange(len(bws) * len(summits))
@@ -47,14 +48,31 @@ def bigwig_reader(bws, summits, signal_window, batch_size):
                 axis=0,
             )
             feats.append(feat)
-            if len(feats) == batch_size:
+            if not post_normalize:
+                if len(feats) >= batch_size:
+                    yield np.array(feats)
+                    feats = []
+        if post_normalize:
+            feats = np.array(feats)
+            pad = (feats.shape[-1] - 800) // 2
+            if pad > 0:
+                vs = feats[..., pad:-pad]
+                low, median, high = (
+                    np.quantile(vs, 0.05),
+                    np.quantile(vs, 0.5),
+                    np.quantile(vs, 0.95),
+                )
+                feats = (feats - median) / (high - low)
+            for chunk in range(0, len(feats), batch_size):
+                yield feats[chunk : chunk + batch_size]
+            feats = []
+        else:
+            if len(feats) > 0:
                 yield np.array(feats)
                 feats = []
-    if len(feats) > 0:
-        yield np.array(feats)
 
 
-def numpy_reader(paths, summits, signal_window, batch_size):
+def numpy_reader(paths, summits, signal_window, batch_size, post_normalize):
     feats = []
     lengths = 0
 
@@ -63,6 +81,16 @@ def numpy_reader(paths, summits, signal_window, batch_size):
         feat = np.nanmean([np.load(p)["arr_0"] for p in path], axis=0)
         pad = feat.shape[-1] // 2 - signal_window
         feat = feat[..., pad:-pad]
+        if post_normalize:
+            pad = (feat.shape[-1] - 800) // 2
+            if pad > 0:
+                vs = feat[..., pad:-pad]
+                low, median, high = (
+                    np.quantile(vs, 0.05),
+                    np.quantile(vs, 0.5),
+                    np.quantile(vs, 0.95),
+                )
+            feat = (feat - median) / (high - low)
         feats.append(feat)
         lengths += feat.shape[0]
         if lengths >= batch_size:
@@ -96,6 +124,12 @@ def main():
     parser.add_argument("--write_numpy", action="store_true", default=False, help="write numpy")
     parser.add_argument("--lora_ids", type=str, default=None, help="lora_ids")
     parser.add_argument("--read_numpy", action="store_true", default=False, help="read numpy")
+    parser.add_argument(
+        "--post_normalize",
+        action="store_true",
+        default=False,
+        help="post_normalize seq attr per lora id",
+    )
 
     torch.set_num_threads(4)
     args = parser.parse_args()
@@ -195,6 +229,7 @@ def main():
                 if args.write_numpy
                 else ["--save_name", ",".join(list(save_name_batch[i]))]
             )
+            + (["--post_normalize"] if args.post_normalize else [])
             for i, (gpu, ids) in enumerate(zip(gpus, ids_batch))
         ]
 
@@ -222,6 +257,7 @@ def main():
         input_readers = []
         models = []
         reader = bigwig_reader if not args.read_numpy else numpy_reader
+
         if seq_foot is not None:
             input_readers.append(
                 reader(
@@ -232,6 +268,7 @@ def main():
                     summits,
                     signal_window,
                     512,
+                    args.post_normalize,
                 )
             )
             models.append(count_model)
@@ -245,6 +282,7 @@ def main():
                     summits,
                     signal_window,
                     512,
+                    args.post_normalize,
                 )
             )
             models.append(foot_model)

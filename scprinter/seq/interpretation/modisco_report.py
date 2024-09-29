@@ -30,6 +30,7 @@ def generate_tomtom_dataframe(
     tomtom_exec: str = "tomtom",
     trim_threshold=0.3,
     trim_min_length=3,
+    selected_pattern: set = None,
 ):
 
     tomtom_results = {}
@@ -46,9 +47,12 @@ def generate_tomtom_dataframe(
             metacluster = modisco_results[contribution_dir_name]
             key = lambda x: int(x[0].split("_")[-1])
 
-            for idx, (_, pattern) in enumerate(sorted(metacluster.items(), key=key)):
+            for idx, (key_, pattern) in enumerate(sorted(metacluster.items(), key=key)):
                 # Rest of your code goes here
-
+                if selected_pattern is not None:
+                    # print (f"{contribution_dir_name}.{key_}", selected_pattern)
+                    if f"{contribution_dir_name}.{key_}" not in selected_pattern:
+                        continue
                 ppm = np.array(pattern["sequence"][:])
                 cwm = np.array(pattern["contrib_scores"][:])
 
@@ -247,7 +251,11 @@ def _plot_weights(array, path, figsize=(10, 3)):
 
 
 def create_modisco_logos(
-    modisco_h5py: os.PathLike, modisco_logo_dir, trim_threshold, pattern_groups: List[str]
+    modisco_h5py: os.PathLike,
+    modisco_logo_dir,
+    trim_threshold,
+    pattern_groups: List[str],
+    selected_patterns: set = None,
 ):
     """Open a modisco results file and create and write logos to file for each pattern."""
     modisco_results = h5py.File(modisco_h5py, "r")
@@ -262,6 +270,9 @@ def create_modisco_logos(
         key = lambda x: int(x[0].split("_")[-1])
         for pattern_name, pattern in sorted(metacluster.items(), key=key):
             tag = "{}.{}".format(name, pattern_name)
+            if selected_patterns is not None:
+                if tag not in selected_patterns:
+                    continue
             tags.append(tag)
 
             cwm_fwd = np.array(pattern["contrib_scores"][:])
@@ -313,88 +324,123 @@ def create_modisco_logos(
 
 
 def report_motifs(
-    modisco_h5py: Path,
+    modisco_h5pys: Path,
     output_dir: os.PathLike,
     summary_file_name: str,
-    img_path_suffix: os.PathLike,
+    img_path_suffixs: os.PathLike,
     meme_motif_db: Union[os.PathLike, None],
     is_writing_tomtom_matrix: bool,
     top_n_matches=3,
-    delta_effect_path: os.PathLike = None,
-    delta_effect_prefix="",
+    delta_effect_paths: os.PathLike = None,
+    delta_effect_prefixs="",
     trim_threshold=0.3,
     trim_min_length=3,
+    selected_patterns: List[str] = None,
 ):
+    """
+    Adapted from modisco-lite, but make it able to accept multiple h5s
+
+    Parameters
+    ----------
+    modisco_h5py
+    output_dir
+    summary_file_name
+    img_path_suffix
+    meme_motif_db
+    is_writing_tomtom_matrix
+    top_n_matches
+    delta_effect_path
+    delta_effect_prefix
+    trim_threshold
+    trim_min_length
+
+    Returns
+    -------
+
+    """
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
 
-    modisco_logo_dir = os.path.join(img_path_suffix, "trimmed_logos")
-    if not os.path.isdir(modisco_logo_dir):
-        os.mkdir(modisco_logo_dir)
-
     pattern_groups = ["pos_patterns", "neg_patterns"]
 
-    create_modisco_logos(modisco_h5py, modisco_logo_dir, trim_threshold, pattern_groups)
+    df_all = []
+    for (
+        modisco_h5py,
+        img_path_suffix,
+        delta_effect_path,
+        delta_effect_prefix,
+        selected_pattern,
+    ) in zip(
+        modisco_h5pys, img_path_suffixs, delta_effect_paths, delta_effect_prefixs, selected_patterns
+    ):
+        selected_pattern = set(selected_pattern) if selected_pattern is not None else None
+        results = {
+            "pattern": [],
+            "num_seqlets": [],
+            "modisco_cwm_fwd": [],
+            "modisco_cwm_rev": [],
+            "delta_effects": [],
+        }
+        modisco_logo_dir = os.path.join(img_path_suffix, "trimmed_logos")
+        if not os.path.isdir(modisco_logo_dir):
+            os.mkdir(modisco_logo_dir)
+        create_modisco_logos(modisco_h5py, modisco_logo_dir, trim_threshold, pattern_groups)
 
-    results = {
-        "pattern": [],
-        "num_seqlets": [],
-        "modisco_cwm_fwd": [],
-        "modisco_cwm_rev": [],
-        "delta_effects": [],
-    }
+        with h5py.File(modisco_h5py, "r") as modisco_results:
+            for name in pattern_groups:
+                if name not in modisco_results.keys():
+                    continue
 
-    with h5py.File(modisco_h5py, "r") as modisco_results:
-        for name in pattern_groups:
-            if name not in modisco_results.keys():
-                continue
-
-            metacluster = modisco_results[name]
-            key = lambda x: int(x[0].split("_")[-1])
-            for pattern_name, pattern in sorted(metacluster.items(), key=key):
-                num_seqlets = pattern["seqlets"]["n_seqlets"][:][0]
-                pattern_tag = f"{delta_effect_prefix}_{name}.{pattern_name}"
-                results["pattern"].append(pattern_tag)
-                results["num_seqlets"].append(num_seqlets)
-                results["modisco_cwm_fwd"].append(
-                    os.path.join(
-                        img_path_suffix, "trimmed_logos", f"{name}.{pattern_name}.cwm.fwd.png"
+                metacluster = modisco_results[name]
+                key = lambda x: int(x[0].split("_")[-1])
+                for pattern_name, pattern in sorted(metacluster.items(), key=key):
+                    num_seqlets = pattern["seqlets"]["n_seqlets"][:][0]
+                    pattern_tag = f"{delta_effect_prefix}_{name}.{pattern_name}"
+                    if selected_pattern is not None:
+                        if f"{name}.{pattern_name}" not in selected_pattern:
+                            continue
+                    results["pattern"].append(pattern_tag)
+                    results["num_seqlets"].append(num_seqlets)
+                    results["modisco_cwm_fwd"].append(
+                        os.path.join(
+                            img_path_suffix, "trimmed_logos", f"{name}.{pattern_name}.cwm.fwd.png"
+                        )
                     )
-                )
-                results["modisco_cwm_rev"].append(
-                    os.path.join(
-                        img_path_suffix, "trimmed_logos", f"{name}.{pattern_name}.cwm.rev.png"
+                    results["modisco_cwm_rev"].append(
+                        os.path.join(
+                            img_path_suffix, "trimmed_logos", f"{name}.{pattern_name}.cwm.rev.png"
+                        )
                     )
-                )
-                results["delta_effects"].append(
-                    os.path.join(delta_effect_path, f"{pattern_tag}.png")
-                )
+                    results["delta_effects"].append(
+                        os.path.join(delta_effect_path, f"{pattern_tag}.png")
+                    )
 
-    patterns_df = pd.DataFrame(results)
-    reordered_columns = [
-        "pattern",
-        "num_seqlets",
-        "modisco_cwm_fwd",
-        "modisco_cwm_rev",
-        "delta_effects",
-    ]
+        patterns_df = pd.DataFrame(results)
+        reordered_columns = [
+            "pattern",
+            "num_seqlets",
+            "modisco_cwm_fwd",
+            "modisco_cwm_rev",
+            "delta_effects",
+        ]
 
-    # If the optional meme_motif_db is not provided, then we won't generate TOMTOM comparison.
-    if meme_motif_db is not None:
-        motifs = read_meme(meme_motif_db)
+        # If the optional meme_motif_db is not provided, then we won't generate TOMTOM comparison.
+        if meme_motif_db is not None:
+            motifs = read_meme(meme_motif_db)
 
-        tomtom_df = generate_tomtom_dataframe(
-            modisco_h5py,
-            output_dir,
-            meme_motif_db,
-            is_writing_tomtom_matrix,
-            top_n_matches=top_n_matches,
-            tomtom_exec="tomtom",
-            pattern_groups=pattern_groups,
-            trim_threshold=trim_threshold,
-            trim_min_length=trim_min_length,
-        )
-        patterns_df = pandas.concat([patterns_df, tomtom_df], axis=1)
+            tomtom_df = generate_tomtom_dataframe(
+                modisco_h5py,
+                output_dir,
+                meme_motif_db,
+                is_writing_tomtom_matrix,
+                top_n_matches=top_n_matches,
+                tomtom_exec="tomtom",
+                pattern_groups=pattern_groups,
+                trim_threshold=trim_threshold,
+                trim_min_length=trim_min_length,
+                selected_pattern=selected_pattern,
+            )
+            patterns_df = pandas.concat([patterns_df, tomtom_df], axis=1)
 
         for i in range(top_n_matches):
             name = f"match{i}"
@@ -413,8 +459,9 @@ def report_motifs(
             patterns_df[f"{name}_logo"] = logos
             reordered_columns.extend([name, f"qval{i}", f"{name}_logo"])
 
-    patterns_df = patterns_df[reordered_columns]
-
+        patterns_df = patterns_df[reordered_columns]
+        df_all.append(patterns_df)
+    patterns_df = pd.concat(df_all, axis=0)
     patterns_df.to_html(
         open(os.path.join(output_dir, f"{summary_file_name}.html"), "w"),
         escape=False,

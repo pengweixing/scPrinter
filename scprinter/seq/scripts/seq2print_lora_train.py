@@ -216,6 +216,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         min_, max_ = np.quantile(coverage, 0.0001), np.quantile(coverage, 0.9999)
         min_ = max(min_, 10)
         print("coverage cutoff", min_, max_)
+
         for k in split:
             datasets[k].filter_by_coverage(min_, max_)
         dataloader = {
@@ -251,6 +252,11 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
             )
             for k in split
         }
+        data = datasets["train"]
+        coverage_in_peak = np.log10(
+            data.coverages.reshape((len(data.summits), -1)).sum(axis=0, keepdims=True).T
+        )
+        print("coverage_in_peak", coverage_in_peak.shape)
         dataloader = {
             k: seq2PRINTDataLoader(
                 dataset=datasets[k],
@@ -341,6 +347,29 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
     #     p.requires_grad = False
     if pretrain_model is not None:
         acc_model = acc_model.cpu()
+        if grp2covs.shape[0] != len(coverage_in_peak):
+            print("grp2covs", grp2covs.shape, "coverage_in_peak", coverage_in_peak.shape)
+            # slicing cells of interest so mismatch in shape:
+            grp2covs = np.concatenate([grp2covs, np.ones_like(grp2covs)], axis=1)
+            if cells_of_interest is not None:
+                from scipy.stats import pearsonr
+
+                print(
+                    "pearsonr",
+                    pearsonr(
+                        grp2covs[cells_of_interest, 0].reshape((-1)), coverage_in_peak.reshape((-1))
+                    ),
+                )
+
+                grp2covs[cells_of_interest, 1] = coverage_in_peak.reshape((-1))
+
+        else:
+            from scipy.stats import pearsonr
+
+            print("pearsonr", pearsonr(grp2covs.reshape((-1)), coverage_in_peak.reshape((-1))))
+            grp2covs = np.concatenate([grp2covs, coverage_in_peak], axis=1)
+
+        print("grp2covs", grp2covs.shape)
         acc_model = seq2PRINT(
             dna_cnn_model=acc_model.dna_cnn_model,
             hidden_layer_model=acc_model.hidden_layer_model,
@@ -566,7 +595,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
             modes,
         )
     )
-    acc_model = acc_model.cpu()
+    acc_model.cpu()
     del acc_model
     if ema:
         del ema

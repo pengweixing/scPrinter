@@ -152,14 +152,15 @@ def main():
     summits = summits[[0, "summits"]]
     summits["summits"] = np.array(summits["summits"], dtype=int)
 
-    acc_model = torch.load(args.pt, map_location="cpu").cuda()
+    acc_model = torch.load(args.pt, map_location="cpu", weights_only=False).cuda()
 
     # If there's coverage, set it to be the same across all models (so there won't be a coverage bias)
     if acc_model.coverages is not None:
         print("setting coverage to be the same")
-        mm = acc_model.coverages.weight.data[:, -1].mean()
-        acc_model.coverages.weight.data[:, -1] = mm
-
+        mm = acc_model.coverages.weight.data.mean(dim=0)
+        acc_model.coverages.weight.data = (
+            torch.ones_like(acc_model.coverages.weight.data) * mm[None]
+        )
     acc_model.eval()
     dna_len = acc_model.dna_len
 
@@ -172,7 +173,7 @@ def main():
         genome = scp.genome.mm10
     else:
         raise ValueError("genome not supported")
-    bias = str(genome.fetch_bias())[:-3] + ".bw"
+    bias = str(genome.fetch_bias_bw())
     signals = [bias, bias]
 
     # Either way we iterate over the ids and calculate the attributions

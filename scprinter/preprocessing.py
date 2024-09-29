@@ -436,6 +436,8 @@ def export_bigwigs(
     printer: scPrinter,
     cell_grouping: list[list[str]] | list[str] | np.ndarray,
     group_names: list[str] | str,
+    smooth_window=0,
+    resolution=1,
 ):
     """
     Generate bigwig files for each group which can be used for synchronized footprint visualization
@@ -451,11 +453,15 @@ def export_bigwigs(
     group_names: list[str] | str
         The name of the group you want to visualize.
         If you want to visualize multiple groups, you can provide a list of names, e.g. `['group1', 'group2']`
-
+    smooth_window: int
+        The smooth window for the bigwig file. Default is 0.
+    resolution: int
+        The resolution for the bigwig file. Default is 1.
     Returns
     -------
 
     """
+    smooth_window = smooth_window // 2
     if type(group_names) not in [np.ndarray, list]:
         group_names = [group_names]
         cell_grouping = [cell_grouping]
@@ -486,11 +492,27 @@ def export_bigwigs(
         bw.addHeader(header, maxZooms=10)
         for chrom in tqdm(chrom_list):
             sig = insertion_profile[chrom]
+
             for i in range(0, sig.shape[-1], chunksize):
-                temp_sig = sig[:, slice(i, i + chunksize)]
+                temp_sig = sig[
+                    :,
+                    slice(
+                        max(i - smooth_window, 0), min(i + chunksize + smooth_window, sig.shape[-1])
+                    ),
+                ]
+                left_pad = 0 if i <= smooth_window else smooth_window
                 if temp_sig.nnz == 0:
                     continue
-                pseudo_bulk = coo_matrix(temp_sig[grouping].sum(axis=0))
+                pseudo_bulk = np.array(temp_sig[grouping].sum(axis=0)).reshape((-1))
+                pseudo_bulk = (
+                    rz_conv(pseudo_bulk, smooth_window)[left_pad : left_pad + chunksize]
+                    if smooth_window > 0
+                    else pseudo_bulk
+                )
+                if resolution > 1:
+                    pseudo_bulk = pseudo_bulk[::resolution]  # export every resolution-th base
+
+                pseudo_bulk = coo_matrix(pseudo_bulk)
                 if len(pseudo_bulk.data) == 0:
                     continue
 
@@ -499,9 +521,9 @@ def export_bigwigs(
 
                 bw.addEntries(
                     str(chrom),
-                    col[indx] + i,
+                    (col[indx] * resolution) + i,
                     values=data[indx].astype("float"),
-                    span=1,
+                    span=resolution,
                 )
         bw.close()
         a[str(name)] = str(path)

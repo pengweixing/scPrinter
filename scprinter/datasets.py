@@ -61,8 +61,8 @@ def datasets():
                 "CisBPJASPA.jaspar": "md5:7f965084f748d9e91f950a7981ffd7d5",
                 "CisBP_Mouse_FigR": "md5:f00120636a859a3de49aad1b5e6a8c1c",
                 "CisBP_Human_FigR": "md5:333c0c141cc08f5e0bdf23f9eb335db7",
-                "CisBP_Mouse_FigR_Bagging": "md5:766de57df1fbdbf7e718d2c79a166d61",
-                "CisBP_Human_FigR_Bagging": "md5:8b2760490915d782c12dc1e1bda99783",
+                "CisBP_Mouse_FigR_Bagging": "md5:e9ff3beff96d066239c0200f5f8940d7",
+                "CisBP_Human_FigR_Bagging": "md5:3c075c36a05e4dc2e9666d4ad9cb3c85",
                 "CisBP_Mouse_FigR_meme": "md5:45bdeee2222db8d36182b44acb63dc80",
                 "CisBP_Human_FigR_meme": "md5:97e96fb17fc015e1d15c76609167606f",
                 # bias file
@@ -104,8 +104,8 @@ def datasets():
                 "CisBPJASPA.jaspar": "https://drive.google.com/uc?export=download&id=1I62z-JZaQOnue7iimU0Q8Uf7ZjpEHLGn",
                 "CisBP_Mouse_FigR": "https://github.com/ruochiz/FigRmotifs/raw/main/mouse_pfms_v4.txt",
                 "CisBP_Human_FigR": "https://github.com/ruochiz/FigRmotifs/raw/main/human_pfms_v4.txt",
-                "CisBP_Mouse_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/chromvar_mouse_2021_cisBP_correlationMatrix.bed",
-                "CisBP_Human_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/chromvar_human_2021_cisBP_correlationMatrix.bed",
+                "CisBP_Mouse_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/FigR_motifs_bagging_mouse.txt",
+                "CisBP_Human_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/FigR_motifs_bagging_human.txt",
                 "CisBP_Mouse_FigR_meme": "https://github.com/ruochiz/FigRmotifs/raw/main/mouse_pfms_v4_meme.txt",
                 "CisBP_Human_FigR_meme": "https://github.com/ruochiz/FigRmotifs/raw/main/human_pfms_v4_meme.txt",
                 # bias file

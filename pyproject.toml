@@ -30,9 +30,10 @@ dependencies = [
     "scanpy",
     "pyBigWig",
     "gffutils",
+    "wandb",
+    "logomaker",
+    "shap"
 ]
-
-
 [project.scripts]
 seq2print_train = "scprinter.seq.scripts.seq2print_lora_train:main"
 seq2print_attr = "scprinter.seq.scripts.evaluation_model:main"

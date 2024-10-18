@@ -80,6 +80,7 @@ def import_data(
         shift_right=0,
         **kwargs,
     )
+    data.obs["frag_path"] = path
     snap.metrics.tsse(data, genome.fetch_gff())
     data = frags_to_insertions(
         data,

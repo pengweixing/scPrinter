@@ -116,19 +116,34 @@ def get_nucleotide_freq(beds, genome, context_radius=20, paired=True):
     reverse_bias = []
     for frags in np.array(beds):
         chrom, start, end = frags[0], int(frags[1]), int(frags[2])
+        if chrom not in genome.chrom_sizes:
+            # print(f"Warning: Chromosome {chrom} not found in the genome file")
+            continue
         if not paired:
             strand = [frags[5]]
         else:
             strand = ["+", "-"]
         if "+" in strand:
-            forward_context = DNA_one_hot(
-                genome_seq[chrom][start - context_radius : start + context_radius].seq.upper()
-            ).T
+            forward_context = (
+                DNA_one_hot(
+                    genome_seq[chrom][start - context_radius : start + context_radius].seq.upper()
+                )
+                .T.detach()
+                .numpy()
+            )
+            if forward_context.shape[0] != 2 * context_radius:
+                print(chrom, start, end, reverse_context.shape)
             forward_bias.append(forward_context)
         if "-" in strand:
-            reverse_context = DNA_one_hot(
-                genome_seq[chrom][end - context_radius : end + context_radius].seq.upper()
-            ).T
+            reverse_context = (
+                DNA_one_hot(
+                    genome_seq[chrom][end - context_radius : end + context_radius].seq.upper()
+                )
+                .T.detach()
+                .numpy()
+            )
+            if reverse_context.shape[0] != 2 * context_radius:
+                print(chrom, start, end, reverse_context.shape)
             reverse_bias.append(reverse_context)
 
     forward_bias = np.mean(np.array(forward_bias), axis=0)
@@ -207,7 +222,8 @@ def sample_bed_file_to_dataframe(filename, sample_size):
     import random
 
     line_count = count_lines(filename)
-    sample_indices = set(random.sample(range(line_count), sample_size))
+    # add 100 to the sample size to account for the header / comment lines etc.
+    sample_indices = set(random.sample(range(line_count), sample_size + 100))
 
     samples = []
     if ".gz" in filename:
@@ -216,6 +232,8 @@ def sample_bed_file_to_dataframe(filename, sample_size):
         file = open(filename, "r")
     for i, line in enumerate(file):
         if i in sample_indices:
+            if line.startswith("#"):
+                continue
             samples.append(line.strip().split("\t"))
             if len(samples) == sample_size:
                 break
@@ -247,7 +265,7 @@ def detect_shift(frags, genome):
 
     # If the fragments file is too large, sample a smaller subset
     if os.path.getsize(frags) / (1024**3) < 2:
-        frags = pd.read_csv(frags, sep="\t", header=None).sample(10000)
+        frags = pd.read_csv(frags, sep="\t", header=None, comment="#").sample(10000)
     else:
         frags = sample_bed_file_to_dataframe(frags, 10000)
 

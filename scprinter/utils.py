@@ -722,7 +722,7 @@ def rz_conv(a, n=2):
     shapes = np.array(a.shape)
     shapes[-1] = n
     a = np.concatenate([np.zeros(shapes), a, np.zeros(shapes)], axis=-1)
-    ret = np.cumsum(a, axis=-1)
+    ret = np.nancumsum(a, axis=-1)
     # ret[..., n * 2:] = ret[..., n * 2:] - ret[..., :-n * 2]
     # ret = ret[..., n * 2:]
     ret = ret[..., n * 2 :] - ret[..., : -n * 2]

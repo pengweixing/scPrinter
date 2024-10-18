@@ -8,6 +8,7 @@ import pyranges
 import seaborn as sns
 from dna_features_viewer import GraphicRecord
 from matplotlib import _api
+from matplotlib.collections import QuadMesh
 from matplotlib.scale import NullFormatter, NullLocator, ScaleBase, Transform
 from typing_extensions import Literal
 
@@ -502,6 +503,7 @@ def plot_footprints(
     log_offset: float = 1.1,
     add_ticks: bool = False,
     clean_mode: bool = False,
+    rasterize: bool = False,
     bg_group_names: str | None = None,
     bg_cell_grouping: list[str] | None = None,
     **kwargs,
@@ -700,6 +702,12 @@ def plot_footprints(
             plt.axis("off")
             plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
             plt.margins(0, 0)
+        if rasterize:
+            for ax_ in ax:
+                for artist in ax_.get_children():
+                    if isinstance(artist, QuadMesh):  # Correct import for QuadMesh
+                        artist.set_rasterized(True)
+
         return
     else:
         data = data[:, 0, :]
@@ -734,6 +742,9 @@ def plot_footprints(
         ax_.get_xaxis().set_visible(False)
         ax_.get_yaxis().set_visible(False)
 
+        for artist in ax_.get_children():
+            if isinstance(artist, QuadMesh):  # Correct import for QuadMesh
+                artist.set_rasterized(True)
         from matplotlib.patches import Patch
 
         handles = [Patch(facecolor=color[name]) for name in color]

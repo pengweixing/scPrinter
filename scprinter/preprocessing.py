@@ -80,7 +80,9 @@ def import_data(
         shift_right=0,
         **kwargs,
     )
-    data.obs["frag_path"] = path
+    data.obs["frag_path"] = [path] * len(data.obs_names)
+    frag_sample_name = "_._".join(tempname.split("_._")[1:])
+    data.obs["frag_sample_name"] = [frag_sample_name] * len(data.obs_names)
     snap.metrics.tsse(data, genome.fetch_gff())
     data = frags_to_insertions(
         data,
@@ -97,10 +99,11 @@ def import_data(
 
 
 def import_fragments(
-    pathToFrags: str | list[str] | Path | list[Path],
+    path_to_frags: str | list[str] | Path | list[Path],
     barcodes: list[str] | list[list[str]] | Path | list[Path],
     savename: str | Path,
     genome: Genome,
+    sample_names: str | list[str] | None = None,
     plus_shift: int = 4,
     minus_shift: int = -5,
     auto_detect_shift: bool = True,
@@ -113,9 +116,12 @@ def import_fragments(
 
     Parameters
     ----------
-    pathToFrags: str | list[str] | Path | list[Path]
+    path_to_frags: str | list[str] | Path | list[Path]
         Path or List of paths to the fragment files. When multiple files are provided,
         they will be separately imported and concatenated.
+    sample_names: str | list[str] | None
+        The name of the samples. Recommend to use when inputing multiple fragments files, and there can be collision of barcode names.
+        When provided, the barcode will be appended with the sample name.
     barcodes: list[str]
         List of barcodes to be whitelisted. If None, all barcodes will be used. Recommend to use.
         If you input one fragments file, the barcodes can either be a list of barcodes, or the path to a barcode file
@@ -148,12 +154,20 @@ def import_fragments(
     if unique_string is None:
         unique_string = str(uuid.uuid4())
     # hoping for a list, but if it's a string, treated it as a list
-    if type(pathToFrags) is str:
-        pathsToFrags = [pathToFrags]
+    if type(path_to_frags) is str:
+        pathsToFrags = [path_to_frags]
         barcodes = [barcodes]
-
     else:
-        pathsToFrags = pathToFrags
+        pathsToFrags = path_to_frags
+
+    if len(pathsToFrags) > 1:
+        if sample_names is None:
+            print(
+                "Multiple fragments files detected, it is suggested to provide sample names to avoid barcode collision"
+            )
+        else:
+            if len(sample_names) != len(pathsToFrags):
+                raise ValueError("sample_names should have the same length as pathsToFrags")
 
     # No longer needed since now snapATAC2 won't handle the frags -> insertions
     # # this function check is snapATAC2 fix the insertion in the future
@@ -221,7 +235,7 @@ def import_fragments(
                 print(
                     "detected plus_shift and minus_shift are", plus_shift, minus_shift, "for", path
                 )
-
+            post_tag = f"_._part{ct}" if sample_names is None else f"_._{sample_names[ct]}"
             p_list.append(
                 pool.submit(
                     import_data,
@@ -231,7 +245,7 @@ def import_fragments(
                     plus_shift,
                     minus_shift,
                     auto_detect_shift,
-                    savename + "_part%d" % ct,
+                    savename + post_tag,
                     True,
                     False,
                     **kwargs,
@@ -240,9 +254,11 @@ def import_fragments(
             ct += 1
             bar.update(1)
             bar.refresh()
+        temp_files = []
         for p in tqdm(as_completed(p_list), total=len(p_list)):
             savepath = p.result()
-            adatas.append((savepath.split("_")[-1], savepath))
+            temp_files.append(savepath)
+            adatas.append(("_._".join(savepath.split("_._")[1:]), savepath))
             # adatas.append(anndata.read_h5ad(savepath))
             sys.stdout.flush()
 
@@ -251,6 +267,13 @@ def import_fragments(
         data2 = snap.AnnData(filename=savename)
         data2.obs = data.obs[:]
         data2.obs_names = data.obs_names
+        # if provided sample_names, add it to the obs_names
+        if sample_names is not None:
+            data2.obs_names = [
+                f"{sample_name}_{barcode}"
+                for sample_name, barcode in zip(data.obs["sample"], data.obs_names)
+            ]
+
         print("start transferring insertions")
         for key in data.adatas.obsm.keys():
             if "insertion" not in key:
@@ -266,7 +289,7 @@ def import_fragments(
         data2.close()
 
         for i in range(ct):
-            os.remove(savename + "_part%d" % i)
+            os.remove(temp_files[i])
         os.remove(savename + "_temp")
         data = snap.read(savename)
     data.uns["genome"] = genome.name

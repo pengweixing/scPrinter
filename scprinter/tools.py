@@ -2048,7 +2048,6 @@ def seq_tfbs_seq2print(
                     seq_attr_path_npz = seq_attr_path.replace(".bigwig", ".npz")
                     # if os.path.exists(seq_attr_path_npz):
                     #     read_numpy = True
-
                     if (not os.path.exists(seq_attr_path)) and (
                         not os.path.exists(seq_attr_path_npz)
                     ):

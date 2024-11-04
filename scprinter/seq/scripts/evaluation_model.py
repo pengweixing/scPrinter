@@ -271,105 +271,105 @@ def main():
                 )
             ) and (not args.overwrite):
                 print("exists")
+            else:
+                bs = int(math.ceil(len(summits) / n_split))
+                start_batches = [i * bs for i in range(n_split)]
+                end_batches = [(i + 1) * bs for i in range(n_split)]
 
-            bs = int(math.ceil(len(summits) / n_split))
-            start_batches = [i * bs for i in range(n_split)]
-            end_batches = [(i + 1) * bs for i in range(n_split)]
-
-            commands = [
-                [
-                    "seq2print_attr",
-                    "--pt",
-                    args.pt,
-                    "--genome",
-                    args.genome,
-                    "--peaks",
-                    args.peaks,
-                    "--start",
-                    str(start_),
-                    "--end",
-                    str(end_),
-                    "--method",
-                    method,
-                    "--write_numpy",
-                    "--wrapper",
-                    wrapper,
-                    "--nth_output",
-                    str(nth_output),
-                    "--gpus",
-                    str(gpu),
-                    "--decay",
-                    str(args.decay),
-                    "--save_key",
-                    args.save_key,
+                commands = [
+                    [
+                        "seq2print_attr",
+                        "--pt",
+                        args.pt,
+                        "--genome",
+                        args.genome,
+                        "--peaks",
+                        args.peaks,
+                        "--start",
+                        str(start_),
+                        "--end",
+                        str(end_),
+                        "--method",
+                        method,
+                        "--write_numpy",
+                        "--wrapper",
+                        wrapper,
+                        "--nth_output",
+                        str(nth_output),
+                        "--gpus",
+                        str(gpu),
+                        "--decay",
+                        str(args.decay),
+                        "--save_key",
+                        args.save_key,
+                    ]
+                    + (["--overwrite"] if args.overwrite else [])
+                    + (["--model_norm", args.model_norm] if args.model_norm is not None else [])
+                    + (["--silent"] if args.silent else [])
+                    for i, (start_, end_, gpu) in enumerate(zip(start_batches, end_batches, gpus))
                 ]
-                + (["--overwrite"] if args.overwrite else [])
-                + (["--model_norm", args.model_norm] if args.model_norm is not None else [])
-                + (["--silent"] if args.silent else [])
-                for i, (start_, end_, gpu) in enumerate(zip(start_batches, end_batches, gpus))
-            ]
-            pool = ProcessPoolExecutor(max_workers=len(gpus))
-            for gpu, command in zip(gpus, commands):
-                pool.submit(subprocess.run, command)
-            pool.shutdown(wait=True)
+                pool = ProcessPoolExecutor(max_workers=len(gpus))
+                for gpu, command in zip(gpus, commands):
+                    pool.submit(subprocess.run, command)
+                pool.shutdown(wait=True)
 
-            # parallel in terms of peaks, merge them:
-            attributions = []
-            hypo, ohe = [], []
-            for start_, end_ in zip(start_batches, end_batches):
-                attributions.append(
-                    np.load(
+                # parallel in terms of peaks, merge them:
+                attributions = []
+                hypo, ohe = [], []
+                for start_, end_ in zip(start_batches, end_batches):
+                    attributions.append(
+                        np.load(
+                            os.path.join(
+                                save_dir,
+                                f"attr.{wrapper}.{method}{extra}.{args.decay}.{start_}-{end_}.npz",
+                            )
+                        )["arr_0"]
+                    )
+                    hypo.append(
+                        np.load(
+                            os.path.join(
+                                save_dir,
+                                f"hypo.{wrapper}.{method}{extra}.{args.decay}.{start_}-{end_}.npz",
+                            )
+                        )["arr_0"]
+                    )
+
+                projected_attributions = np.concatenate(attributions, axis=0)
+                hypo = np.concatenate(hypo, axis=0)
+
+                save_attrs(
+                    projected_attributions=projected_attributions,
+                    hypo=hypo,
+                    norm_key=norm_key,
+                    acc_model=acc_model,
+                    id=None,  # pass none because it's definitely parallel in peaks mode
+                    wrapper=wrapper,
+                    method=method,
+                    extra=extra,
+                    start=0,
+                    end=regions.shape[0],
+                    partition_by_region=False,  # we collected them all
+                    decay=args.decay,
+                    regions=regions,
+                    verbose=verbose,
+                    write_bigwig=write_bigwig,
+                    chrom_size=genome.chrom_sizes,
+                    save_dir=save_dir,
+                )
+
+                for start_, end_ in zip(start_batches, end_batches):
+                    os.remove(
                         os.path.join(
                             save_dir,
                             f"attr.{wrapper}.{method}{extra}.{args.decay}.{start_}-{end_}.npz",
                         )
-                    )["arr_0"]
-                )
-                hypo.append(
-                    np.load(
+                    )
+                    os.remove(
                         os.path.join(
                             save_dir,
                             f"hypo.{wrapper}.{method}{extra}.{args.decay}.{start_}-{end_}.npz",
                         )
-                    )["arr_0"]
-                )
-
-            projected_attributions = np.concatenate(attributions, axis=0)
-            hypo = np.concatenate(hypo, axis=0)
-
-            save_attrs(
-                projected_attributions=projected_attributions,
-                hypo=hypo,
-                norm_key=norm_key,
-                acc_model=acc_model,
-                id=None,  # pass none because it's definitely parallel in peaks mode
-                wrapper=wrapper,
-                method=method,
-                extra=extra,
-                start=0,
-                end=regions.shape[0],
-                partition_by_region=False,  # we collected them all
-                decay=args.decay,
-                regions=regions,
-                verbose=verbose,
-                write_bigwig=write_bigwig,
-                chrom_size=genome.chrom_sizes,
-                save_dir=save_dir,
-            )
-
-            for start_, end_ in zip(start_batches, end_batches):
-                os.remove(
-                    os.path.join(
-                        save_dir,
-                        f"attr.{wrapper}.{method}{extra}.{args.decay}.{start_}-{end_}.npz",
                     )
-                )
-                os.remove(
-                    os.path.join(
-                        save_dir,
-                        f"hypo.{wrapper}.{method}{extra}.{args.decay}.{start_}-{end_}.npz",
-                    )
-                )
 
     else:
         # single gpu

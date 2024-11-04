@@ -421,9 +421,10 @@ class seq2PRINTDataset(torch.utils.data.Dataset):
                         summit + self.signal_flank + self.max_jitter,
                     )
                 )
-            except:
+            except Exception as e:
                 print(
                     "signal error",
+                    e,
                     chrom,
                     summit,
                     summit - self.signal_flank - self.max_jitter,

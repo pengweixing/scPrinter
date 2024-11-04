@@ -2552,7 +2552,7 @@ def modisco_report(
     for img_path_suffix in img_path_suffixs:
         if not os.path.exists(img_path_suffix):
             os.makedirs(img_path_suffix)
-    interpretation.modisco_report.report_motifs(
+    return interpretation.modisco_report.report_motifs(
         modisco_h5,
         output_dir,
         save_name,

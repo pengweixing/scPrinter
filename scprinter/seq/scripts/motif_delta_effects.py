@@ -49,7 +49,7 @@ def get_model_outputs(
         # n_motif = seq.shape[0]
         n_CRE = seq.shape[0]
         # seq = seq.flatten(start_dim=0, end_dim=1)
-        print("seq prepared v2")
+        # print("seq prepared v2")
 
         outputs1 = 0
         outputs2 = 0
@@ -298,7 +298,7 @@ def main():
             input_sequences = [x for x in seq_motif] + [seq_bg]
             import time
 
-            print("seq prepared")
+            # print("seq prepared")
             # time.sleep(100)
             #
             # for seq in [seq_motif, seq_bg]:

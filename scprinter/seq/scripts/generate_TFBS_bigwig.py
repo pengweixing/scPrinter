@@ -297,6 +297,8 @@ def main():
         # Get the average of all models
         avg = np.mean(output_all, axis=0)
         avg = avg.reshape((len(lora_ids), len(summits), -1))
+        avg = avg[..., 100:-100]
+        print(avg.shape)
 
         if args.write_numpy:
             np.savez(
@@ -306,8 +308,8 @@ def main():
         else:
 
             regions = summits.copy()
-            regions[1] = regions["summits"] - signal_window + 100
-            regions[2] = regions["summits"] + signal_window - 100
+            regions[1] = regions["summits"] - signal_window + 200
+            regions[2] = regions["summits"] + signal_window - 200
             regions = regions[[0, 1, 2]]
             for i, (lora_id, name) in enumerate(zip(lora_ids, save_name)):
                 print(name, lora_id)

@@ -76,7 +76,7 @@ $ cd scPrinter
 pip install ./
 ```
 
-# For personal environment, you don't need to do this, for shared environment make everyone use the same cache dir
+For personal environment, you don't need to do this, for shared environment make everyone use the same cache dir
 
 ```
 mamba env config vars set SCPRINTER_DATA=/n/holylfs06/LABS/buenrostro_lab/Lab/.cache/scprinter/

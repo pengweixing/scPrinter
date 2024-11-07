@@ -15,6 +15,8 @@ scPrinter also provides a suite of visualization tools to explore the calculated
 
 ### Installation
 
+Typical installation time: within 30mins
+
 Please install pytorch (with gpu-compatibility if you will be using GPU) before installing scPrinter. You can install pytorch by following the instructions on the official website: https://pytorch.org/get-started/locally/.
 A quick installation of scPrinter can be done by running the following command, and most of the dependencies would be resolved automatically.
 

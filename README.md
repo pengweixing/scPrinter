@@ -1,4 +1,10 @@
-# <img src="img/logo.png" alt="logo" width="80"/> scPrinter
+<h1 align="center">
+  <br>
+  <a href="https://ruochiz.com/scprinter_doc/"><img src="img/logo.png" alt="scPrinter" width="200"></a>
+  <br>
+  scPrinter
+  <br>
+</h1>
 
 scPrinter is a computational framework for the multi-scale footprinting analysis of single-cell ATAC-seq data.
 scPrinter is designed to identify and visualize the regulatory elements that drive cell-type-specific gene expression programs through footprinting.
@@ -93,3 +99,7 @@ If you use scPrinter in your research, please cite the following paper:
 ```
 adding bibtex later
 ```
+
+## License
+
+MIT

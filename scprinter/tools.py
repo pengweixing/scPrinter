@@ -2391,8 +2391,6 @@ def delta_effects_seq2print(
         Add a prefix string to the motif names
     sample_num: int
         The number of randomly sampled peaks to use for marginalization
-    batch_size: int
-        The batch size for the calculation
     device: str
         The device to use for the calculation, can be 'cpu' or 'cuda:6' etc
     flank: int

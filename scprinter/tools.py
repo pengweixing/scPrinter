@@ -1744,9 +1744,9 @@ def seq_attr_seq2print(
     sample=None,
     save_norm=False,
     overwrite=False,
-    lora_ids: list = None,
+    lora_ids: list | list[list] = None,
     lora_config: dict | str | None = None,
-    group_names: list | str | None = None,
+    group_names: list | list[list] | str | None = None,
     verbose=True,
     launch=False,
     numpy_mode=False,
@@ -1872,8 +1872,17 @@ def seq_attr_seq2print(
             group_names_all = lora_config["group_names"]
             group_names_query = {g: i for i, g in enumerate(group_names_all)}
             # Now query the index of finetune_cell_grouping in cell_grouping
-            lora_ids = [group_names_query[group] for group in group_names]
-        lora_ids = ",".join([str(x) for x in lora_ids])
+            if type(group_names) is str:
+                group_names = [group_names]
+            if type(group_names[0]) is str:
+                group_names = [[x] for x in group_names]
+            lora_ids = [[group_names_query[xx] for xx in group] for group in group_names]
+        if type(lora_ids) is int:
+            lora_ids = [[lora_ids]]
+        if type(lora_ids[0]) is int:
+            lora_ids = [[x] for x in lora_ids]
+        lora_ids = ",".join(["-".join([str(y) for y in x]) for x in lora_ids])
+
         command += f" --models {lora_ids}"
     if preset is not None:
         command += f" --model_norm {preset}"
@@ -1923,7 +1932,7 @@ def seq_tfbs_seq2print(
     model_type: Literal["seq2print", "lora", None] = None,
     model_path: str | Path | None | list = None,
     lora_config: dict | str | None = None,
-    group_names: list | str | None = None,
+    group_names: list | str | list[list] | None = None,
     save_path: str | Path = None,
     overwrite_seqattr=False,
     post_normalize=False,
@@ -1984,13 +1993,16 @@ def seq_tfbs_seq2print(
         gpus = [gpus]
     if type(group_names) not in [np.ndarray, list]:
         group_names = [group_names]
+    if type(group_names[0]) not in [np.ndarray, list]:
+        group_names = [[x] for x in group_names]
+
     if return_adata:
         assert save_key is not None, "Please provide the save_key if you are using return_adata"
         assert launch is True, "Please set launch as True if you are using return_adata"
     else:
         save_key = "deepshap" if save_key is None else save_key
     if model_type == "lora":
-        assert group_names is not None, "Please provide the lora_ids if you are using lora model"
+        assert group_names is not None, "Please provide the group_names if you are using lora model"
         assert (seq_attr_count is None) and (
             seq_attr_footprint is None
         ), "Both seq_attr_count and seq_attr_footprint should be None if you are using lora model"
@@ -1998,9 +2010,9 @@ def seq_tfbs_seq2print(
         group_names_all = lora_config["group_names"]
         group_names_query = {g: i for i, g in enumerate(group_names_all)}
         # Now query the index of finetune_cell_grouping in cell_grouping
-        lora_ids = [group_names_query[group] for group in group_names]
+        lora_ids = [[group_names_query[xx] for xx in group] for group in group_names]
     else:
-        lora_ids = [None]
+        lora_ids = [[None]]
     if type(seq_attr_count) in [str, Path]:
         seq_attr_count = [seq_attr_count]
     if type(seq_attr_footprint) in [str, Path]:
@@ -2009,7 +2021,6 @@ def seq_tfbs_seq2print(
     seq_attrs_all = []
     all_pass = True
     read_numpy = False
-
     for seq_attr, template, kind in zip(
         [seq_attr_count, seq_attr_footprint],
         ["attr.count.shap_hypo_0_.0.85.bigwig", "attr.just_sum.shap_hypo_0-30_.0.85.bigwig"],
@@ -2027,10 +2038,11 @@ def seq_tfbs_seq2print(
 
             if overwrite_seqattr:
                 for id in lora_ids:
+                    id_str = "-".join([str(x) for x in id])
                     for model in model_path:
                         seq_attr_path = os.path.join(
                             f"{model}_{save_key}",
-                            f"model_{id}." + template if id is not None else template,
+                            f"model_{id_str}." + template if id[0] is not None else template,
                         )
                         seq_attr_path_npz = seq_attr_path.replace(".bigwig", ".npz")
                         if os.path.exists(seq_attr_path_npz):
@@ -2041,21 +2053,23 @@ def seq_tfbs_seq2print(
             for model in model_path:
                 generate_seq_attr = []
                 for id in lora_ids:
+                    id_str = "-".join([str(x) for x in id])
                     seq_attr_path = os.path.join(
                         f"{model}_{save_key}",
-                        f"model_{id}." + template if id is not None else template,
+                        f"model_{id_str}." + template if id[0] is not None else template,
                     )
                     seq_attr_path_npz = seq_attr_path.replace(".bigwig", ".npz")
                     # if os.path.exists(seq_attr_path_npz):
                     #     read_numpy = True
+                    if return_adata:
+                        read_numpy = True
+
                     if (not os.path.exists(seq_attr_path)) and (
                         not os.path.exists(seq_attr_path_npz)
                     ):
-
                         all_pass = False
                         generate_seq_attr.append(id)
-                        if return_adata:
-                            read_numpy = True
+
                 if verbose and (len(generate_seq_attr) > 0):
                     print(f"{model} seq attr file does not exist")
 
@@ -2077,15 +2091,17 @@ def seq_tfbs_seq2print(
             seq_attr.append(
                 os.path.join(
                     f"{model}_{save_key}",
-                    "model_{lora_id}." + template if id is not None else template,
+                    "model_{lora_id}." + template if id[0] is not None else template,
                 )
             )
         else:
             if ".npz" in seq_attr[0]:
                 read_numpy = True
+
         if read_numpy:
             seq_attr = [x.replace(".bigwig", ".npz") for x in seq_attr]
         seq_attrs_all.append(seq_attr)
+
     if launch:
         all_pass = True  # if we are launching, we assume all the files are there
     if not all_pass:
@@ -2096,15 +2112,17 @@ def seq_tfbs_seq2print(
     foot = " ".join(foot)
     count_pt = pretrained_seq_TFBS_model0
     foot_pt = pretrained_seq_TFBS_model1
-    save_name = ",".join([os.path.join(save_path, str(x)) for x in group_names])
+    save_name = ",".join(
+        [os.path.join(save_path, "-".join([str(y) for y in x])) for x in group_names]
+    )
     gpus = " ".join([str(x) for x in gpus])
     command = (
         f"seq2print_tfbs --count_pt {count_pt} --foot_pt {foot_pt} "
         f"--seq_count {count} --seq_foot {foot} --genome {genome.name} "
         f"--peaks {region_path} --save_name {save_name} --gpus {gpus}"
     )
-    if lora_ids[0] is not None:
-        lora_ids_str = ",".join([str(x) for x in lora_ids])
+    if lora_ids[0][0] is not None:
+        lora_ids_str = ",".join(["-".join([str(y) for y in x]) for x in lora_ids])
         command += f" --lora_ids {lora_ids_str}"
 
     if return_adata:
@@ -2131,8 +2149,9 @@ def seq_tfbs_seq2print(
         results = np.load(f"{save_key}TFBS.npz")["tfbs"]
 
         print("obs=groups, var=regions")
-        df_obs = pd.DataFrame({"name": group_names, "id": lora_ids})
-        df_obs.index = group_names
+        lora_ids_str = ["-".join([str(y) for y in x]) for x in lora_ids]
+        df_obs = pd.DataFrame({"name": group_names, "id": lora_ids_str})
+        df_obs.index = ["-".join([str(x) for x in group_name]) for group_name in group_names]
         df_var = regions
         df_var["identifier"] = region_identifiers
         df_var.index = region_identifiers
@@ -2146,7 +2165,6 @@ def seq_tfbs_seq2print(
         adata = anndata.AnnData(**adata_params)
         for i, region_identifier in enumerate(region_identifiers):
             adata.obsm[region_identifier] = results[:, i]
-        print(adata)
         return adata
 
 
@@ -2158,6 +2176,7 @@ def seq_denovo_seq2print(
     preset: Literal["footprint", "count"] = "footprint",
     n_seqlets=1000000,
     modisco_window=1000,
+    leiden_resolution=1,
     save_path: str | Path = None,
     overwrite=False,
     verbose=False,
@@ -2204,7 +2223,7 @@ def seq_denovo_seq2print(
         model_path = [model_path]
 
     ohe_path = f"{region_path}_ohe.npz"
-    if not os.path.exists(ohe_path) | overwrite:
+    if (not os.path.exists(ohe_path)) | overwrite:
         ohe_for_modisco(region_path, genome, model=model_path[0], save_path=ohe_path)
     all_pass = True
     seq_attrs = []
@@ -2239,7 +2258,7 @@ def seq_denovo_seq2print(
         all_pass = True
     if not all_pass:
         return
-    if not os.path.exists(save_path) | overwrite:
+    if (not os.path.exists(save_path)) | overwrite:
         modisco_helper(
             ohe=ohe_path,
             hypo=seq_attrs,
@@ -2247,6 +2266,7 @@ def seq_denovo_seq2print(
             verbose=verbose,
             n=n_seqlets,
             w=modisco_window,
+            resolution=leiden_resolution,
             launch=launch,
         )
 
@@ -2287,7 +2307,7 @@ def seq_denovo_callhits(
         )
         seq_attrs.append(seq_attr_path)
     seq_attr = seq_attrs[0] if len(seq_attrs) == 1 else modisco_output + ".avg.hypo.npz"
-    if not os.path.exists(f"{save_path}/hits.tsv") | overwrite:
+    if (not os.path.exists(f"{save_path}/hits.tsv")) | overwrite:
         command1 = f"finemo extract-regions-modisco-fmt -s {ohe_path} -a {seq_attr} -o {save_path}.finemo.npz"
         command2 = f"finemo call-hits -M pp -r {save_path}.finemo.npz -m {modisco_output} -o {save_path} -d {device}"
         if verbose:
@@ -2326,6 +2346,7 @@ def modisco_helper(
     overwrite_avg_hypo=False,
     n=1000000,
     w=1000,
+    resolution=1.0,
     verbose=False,
     launch=False,
 ):
@@ -2335,14 +2356,16 @@ def modisco_helper(
         hypo = [hypo]
     if len(hypo) > 1:
         hypo_path = output + ".avg.hypo.npz"
-        if not os.path.exists(hypo_path) | overwrite_avg_hypo:
+        if (not os.path.exists(hypo_path)) | overwrite_avg_hypo:
             new_hypo = [np.load(h)["arr_0"] for h in hypo]
             new_hypo = np.array(new_hypo).mean(axis=0)
             np.savez(hypo_path, new_hypo)
         hypo = hypo_path
     else:
         hypo = hypo[0]
-    command = f"modisco motifs -s {ohe} -a {hypo} -n {n} -o {output} -w {w}"
+    command = (
+        f"seq2print_modisco motifs -s {ohe} -a {hypo} -n {n} -o {output} -w {w} -r {resolution}"
+    )
     if verbose:
         if launch:
             print(launch_template)
@@ -2415,7 +2438,7 @@ def delta_effects_seq2print(
         with h5py.File(motifs, "r") as f:
             for group in ["pos_patterns", "neg_patterns"]:
                 for key in f[group].keys():
-                    nn = f"{prefix}_{group}.{key}"
+                    nn = f"{prefix}{group}.{key}"
                     names.append(nn)
     elif isinstance(motifs, Motifs):
         for motif in motifs.all_motifs:
@@ -2484,8 +2507,8 @@ def modisco_report(
     modisco_h5: str | Path | list[Path],
     save_path: str | Path,
     meme_motif: os.PathLike | Literal["human", "mouse"],
+    motif_prefix: str | list[str] = "",
     delta_effect_path: str | Path | list[Path] = None,
-    delta_effect_prefix: str | list[str] = "",
     is_writing_tomtom_matrix: bool = True,
     top_n_matches=3,
     trim_threshold=0.3,
@@ -2506,7 +2529,7 @@ def modisco_report(
     delta_effect_path: str | Path
         The path to the delta effects file. This should be your save_path argument passed to `scp.tl.delta_effects_seq2print`
         When provided as a list, make it the same length as the modisco_h5
-    delta_effect_prefix: str
+    motif_prefix: str
         The prefix for the denovo motifs if any. This should be the same as the prefix argument passed to `scp.tl.delta_effects_seq2print`.
         When provided as a list, make it the same length as the modisco_h5
     is_writing_tomtom_matrix: bool
@@ -2540,8 +2563,8 @@ def modisco_report(
         modisco_h5 = [modisco_h5]
     if type(delta_effect_path) is not list:
         delta_effect_path = [delta_effect_path]
-    if type(delta_effect_prefix) is str:
-        delta_effect_prefix = [delta_effect_prefix]
+    if type(motif_prefix) is str:
+        motif_prefix = [motif_prefix]
     if selected_patterns is None:
         selected_patterns = [None] * len(modisco_h5)
     elif type(selected_patterns[0]) is str:
@@ -2556,10 +2579,9 @@ def modisco_report(
         save_name,
         img_path_suffixs,
         meme_motif,
-        is_writing_tomtom_matrix,
         top_n_matches,
         delta_effect_path,
-        delta_effect_prefix,
+        motif_prefix,
         trim_threshold,
         trim_min_length,
         selected_patterns,

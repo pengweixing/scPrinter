@@ -529,3 +529,37 @@ GRCm38 = Genome(
 )
 
 mm10 = GRCm38
+
+
+mm39_genome = Genome(
+    name="mm39",
+    chrom_sizes={
+        "chr1": 195154279,
+        "chr2": 181755017,
+        "chrX": 169476592,
+        "chr3": 159745316,
+        "chr4": 156860686,
+        "chr5": 151758149,
+        "chr6": 149588044,
+        "chr7": 144995196,
+        "chr10": 130530862,
+        "chr8": 130127694,
+        "chr14": 125139656,
+        "chr9": 124359700,
+        "chr11": 121973369,
+        "chr13": 120883175,
+        "chr12": 120092757,
+        "chr15": 104073951,
+        "chr16": 98008968,
+        "chr17": 95294699,
+        "chrY": 91455967,
+        "chr18": 90720763,
+        "chr19": 61420004,
+    },
+    gff_file="gencode_vM30_GRCm39.gff3.gz",
+    fa_file="gencode_vM30_GRCm39.fa.gz",
+    bias_file="/data/rzhang/mm39/mm39Tn5Bias.h5",
+    blacklist_file="/data/rzhang/mm39/mm39.excluderanges.bed",
+    bg=(0.29149763779592625, 0.2083275235867118, 0.20834346947899296, 0.291831369138369),
+    splits=mm10_splits,
+)

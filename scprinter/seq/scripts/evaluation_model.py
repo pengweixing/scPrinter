@@ -132,9 +132,11 @@ def main():
     if args.models is not None:
         ids = args.models
         ids = ids.split(",")
-        ids = [int(i) for i in ids]
+        ids = [i.split("-") for i in ids]
+        print(ids[:5], ids[-5:])
+        ids = [[int(j) for j in i] for i in ids]
     else:
-        ids = [None]
+        ids = [[None]]
     print(ids)
     gpus = args.gpus
     wrapper = args.wrapper
@@ -212,13 +214,14 @@ def main():
 
     if len(gpus) > 1:
         n_split = len(gpus)
-        if ids[0] is not None:  # This is the lora mode, parallel in terms of lora models
+        if ids[0][0] is not None:  # This is the lora mode, parallel in terms of lora models
             unfinished_ids = []
             for id in ids:
+                id_str = "-".join([str(x) for x in id])
                 if os.path.exists(
                     os.path.join(
                         save_dir,
-                        f"model_{id}.hypo.{wrapper}.{method}{extra}.{args.decay}.npz",
+                        f"model_{id_str}.hypo.{wrapper}.{method}{extra}.{args.decay}.npz",
                     )
                 ) and (not args.overwrite):
                     print("exists")
@@ -238,7 +241,7 @@ def main():
                     "--peaks",
                     args.peaks,
                     "--models",
-                    ",".join([str(i) for i in id_batch]),
+                    ",".join(["-".join([str(j) for j in i]) for i in id_batch]),
                     "--method",
                     method,
                     "--wrapper",
@@ -376,18 +379,19 @@ def main():
         bar = tqdm(ids)
         dataset.cache()  # only cache when single gpu and can
         for id in bar:
-            bar.set_description(f"working on {id}")
+            id_str = "-".join([str(i) for i in id]) if id[0] is not None else None
+            bar.set_description(f"working on {id_str}")
             if os.path.exists(
                 os.path.join(
                     save_dir,
-                    (f"model_{id}." if id is not None else "")
+                    (f"model_{id_str}." if id[0] is not None else "")
                     + f"hypo.{wrapper}.{method}{extra}.{args.decay}.npz",
                 )
             ) and (not args.overwrite):
                 print("exists")
                 continue
 
-            model_0 = acc_model if id is None else acc_model.collapse(int(id))
+            model_0 = acc_model if id[0] is None else acc_model.collapse([int(i) for i in id])
             model_0 = model_0.cuda()
             model_0.eval()
 
@@ -448,7 +452,7 @@ def main():
                 hypo=hypo,
                 norm_key=norm_key,
                 acc_model=acc_model,
-                id=id,
+                id=id_str,
                 wrapper=wrapper,
                 method=method,
                 extra=extra,

@@ -308,7 +308,9 @@ def _compute_deviations(motif_match, count, expectation_obs, expectation_var, de
     return out
 
 
-def bag_deviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None):
+def bag_deviations(
+    adata=None, ranked_df=None, cutoff=0.7, motif_motif_matrix=None, collapse_greater=True
+):
     """
     This function performs a bagging operation on transcription factors (TFs) based on their correlation with each other.
     It selects a representative TF (sentinel TF) for each group of TFs that have a correlation coefficient greater than or equal to the specified threshold.
@@ -319,13 +321,14 @@ def bag_deviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None):
         An AnnData object containing the count matrix and TF information. If provided, TF variability will be computed from this object.
     ranked_df : DataFrame, optional
         A DataFrame containing TF names and their variability scores. If provided, TF variability will be computed from this object.
-    cor : float, optional
-        The correlation coefficient threshold. TFs with a correlation coefficient greater than or equal to this threshold will be grouped together.
-    motif_corr_matrix : str, optional
-        The path to the motif correlation matrix file. The common options are `scp.datasets.FigR_motifs_bagging_mouse` and `scp.datasets.FigR_motifs_bagging_human`.
-    use_name : bool, optional
-        A flag indicating whether to use TF names from the correlation matrix file. If True, TF names will be extracted from the correlation matrix file.
-
+    cutoff : float, optional
+        The coefficient threshold. TFs with a correlation coefficient greater (if collapse_higher=True, otherwise smaller) than or equal to this threshold will be grouped together.
+    motif_motif_matrix : str | pd.DataFrame
+        The path to the motif motif matrix file or a dataframe. The common options are `scp.datasets.FigR_motifs_bagging_mouse` and `scp.datasets.FigR_motifs_bagging_human`.
+    collapse_greater : bool, optional
+        Whether to collapse TFs with coefficient greater than or equal to the threshold.
+        If False, TFs with coefficient smaller than or equal to the threshold will be collapsed.
+        For instance, if it's correlation based method, set as True, if it's tomtom or testing based metod, set as False
     Returns
     -------
     DataFrame
@@ -336,7 +339,7 @@ def bag_deviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None):
         If a DataFrame object is provided, a list containing the TF groups.
     """
 
-    assert motif_corr_matrix is not None, "Motif correlation matrix must be provided"
+    assert motif_motif_matrix is not None, "Motif correlation matrix must be provided"
     assert adata is not None or ranked_df is not None, "Either adata or ranking_df must be provided"
 
     # Compute variability and get transcription factors (TFs)
@@ -352,36 +355,40 @@ def bag_deviations(adata=None, ranked_df=None, cor=0.7, motif_corr_matrix=None):
         TFnames = ranked_df.index.tolist()
     TFnames_to_rank = {tf: i for i, tf in enumerate(TFnames)}
     # Import correlation based on PWMs for the organism
-    if type(motif_corr_matrix) is pd.DataFrame:
-        cormat = motif_corr_matrix
+    if type(motif_motif_matrix) is pd.DataFrame:
+        cormat = motif_motif_matrix
     else:
         cormat = pd.read_csv(
-            motif_corr_matrix, sep="\t"
+            motif_motif_matrix, sep="\t"
         )  # Assuming the RDS file contains one object
 
-    # Historical code, kept for future references
-    # if use_name:
-    #     tf1 = [xx.split("_")[2] for xx in cormat["TF1"]]
-    #     tf2 = [xx.split("_")[2] for xx in cormat["TF2"]]
-    #     cormat["TF1"] = tf1
-    #     cormat["TF2"] = tf2
+    tf1 = cormat.iloc[:, 0]
+    tf2 = cormat.iloc[:, 1]
 
     assert set(TFnames).issubset(
-        set(cormat["TF1"]).union(set(cormat["TF2"]))
+        set(tf1).union(set(tf2))
     ), "All TF names must be in the correlation matrix"
-    cormat = cormat[(cormat["TF1"].isin(TFnames)) & (cormat["TF2"].isin(TFnames))]
+    cormat = cormat[(tf1.isin(TFnames)) & (tf2.isin(TFnames))]
+
+    tf1 = cormat.iloc[:, 0]
+    tf2 = cormat.iloc[:, 1]
+    factor = np.array(cormat.iloc[:, 2])
+    if not collapse_greater:
+        factor = factor * -1
+        cutoff = -1 * cutoff
+
     i = 1
     TFgroups = []
     while len(TFnames) != 0:
         tfcur = TFnames[0]
-        boo = ((cormat["TF1"] == tfcur) | (cormat["TF2"] == tfcur)) & (cormat["Pearson"] >= cor)
+        boo = ((tf1 == tfcur) | (tf2 == tfcur)) & (factor >= cutoff)
         hits = cormat[boo]
-        tfhits = list(set(list(np.unique(hits[["TF1", "TF2"]])) + [tfcur]))
+        tfhits = list(set(list(np.unique(hits.iloc[:, :2])) + [tfcur]))
 
         # Update lists
         TFnames = [tf for tf in TFnames if tf not in tfhits]
         TFgroups.append(tfhits)
-        cormat = cormat[cormat["TF1"].isin(TFnames) & cormat["TF2"].isin(TFnames)]
+        cormat = cormat[tf1.isin(TFnames) & tf2.isin(TFnames)]
         i += 1
 
     sentinalTFs = []

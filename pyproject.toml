@@ -32,13 +32,15 @@ dependencies = [
     "gffutils",
     "wandb",
     "logomaker",
-    "shap"
+    "shap",
+    "tangermeme"
 ]
 [project.scripts]
 seq2print_train = "scprinter.seq.scripts.seq2print_lora_train:main"
 seq2print_attr = "scprinter.seq.scripts.evaluation_model:main"
 seq2print_tfbs = "scprinter.seq.scripts.generate_TFBS_bigwig:main"
 seq2print_delta = "scprinter.seq.scripts.motif_delta_effects:main"
+seq2print_modisco = "scprinter.seq.scripts.modisco_custom:main"
 
 [tool.black]
 line-length = 100

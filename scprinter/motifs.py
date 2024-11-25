@@ -13,6 +13,7 @@ from functools import partial
 from itertools import product
 from pathlib import Path
 
+import h5py
 import MOODS
 import MOODS.parsers
 import MOODS.scan
@@ -22,12 +23,116 @@ import pandas as pd
 from Bio import motifs
 from pyfaidx import Fasta
 from scipy.sparse import SparseEfficiencyWarning, csr_matrix, diags, hstack, vstack
+from statsmodels.stats.multitest import fdrcorrection
+from tangermeme.io import read_meme
+from tangermeme.tools.tomtom import tomtom
 from tqdm.auto import tqdm, trange
 from typing_extensions import Literal
 
 from . import genome
 from .datasets import CisBP_Human, FigR_motifs_human, FigR_motifs_mouse, JASPAR2022_core
 from .utils import regionparser
+
+"""
+Most of the code are from modiscolite, and adapted to include the delta effects.
+Chose to copy code because modiscolite somehow changes the backend of matplotlib and inline version
+"""
+
+
+def read_pfms(motif, trim_threshold=0.3, prefix=""):
+    if isinstance(motif, Motifs):
+        dict1 = {}
+        for mtx in motif.all_motifs:
+            name = mtx.name
+            c = mtx.counts
+            mtx = np.array([c["A"], c["C"], c["G"], c["T"]]).T
+            mtx = mtx / np.sum(mtx, axis=1)[:, None]
+            dict1[prefix + name] = mtx.T
+    elif isinstance(motif, dict):
+        dict1 = motif
+    else:
+        if ".h5" in motif:
+            # modisco format
+            modisco_motifs = {}
+            with h5py.File(motif, "r") as modisco_results:
+                for contribution_dir_name in modisco_results.keys():
+                    metacluster = modisco_results[contribution_dir_name]
+                    key = lambda x: int(x[0].split("_")[-1])
+
+                    for idx, (key_, pattern) in enumerate(sorted(metacluster.items(), key=key)):
+                        ppm = np.array(pattern["sequence"][:])
+                        cwm = np.array(pattern["contrib_scores"][:])
+                        pattern_name = f"{contribution_dir_name}.pattern_{idx}"
+                        score = np.sum(np.abs(cwm), axis=1)
+                        trim_thresh = (
+                            np.max(score) * trim_threshold
+                        )  # Cut off anything less than 30% of max score
+                        pass_inds = np.where(score >= trim_thresh)[0]
+                        trimmed = ppm[np.min(pass_inds) : np.max(pass_inds) + 1]
+                        modisco_motifs[prefix + pattern_name] = trimmed.T
+            dict1 = modisco_motifs
+        else:
+            dict1 = read_meme(motif)
+            dict1 = {prefix + k: v.detach().numpy() for k, v in dict1.items()}
+    return dict1
+
+
+def tomtom_motif_motif_matrix(
+    motifs_1, prefix_1="", motifs_2=None, prefix_2="", trim_threshold=0.3
+):
+    """
+    create a motif motif matrix using tomtom
+    Parameters
+    ----------
+    motif: list[str, Path, motifs.Motifs] | str, Path, motifs.Motifs
+
+    Returns
+    -------
+    p values: np.ndarray
+    """
+
+    if not isinstance(motifs_1, list):
+        motifs_1 = [motifs_1]
+    if not isinstance(prefix_1, list):
+        prefix_1 = [prefix_1]
+    if motifs_2 is None:
+        motifs_2 = motifs_1
+        prefix_2 = prefix_1
+    if not isinstance(motifs_2, list):
+        motifs_2 = [motifs_2]
+    if not isinstance(prefix_2, list):
+        prefix_2 = [prefix_2]
+
+    all_names_1 = []
+    all_pfms_1 = []
+
+    for m, p in zip(motifs_1, prefix_1):
+        m = read_pfms(m, trim_threshold=trim_threshold, prefix=p)
+        all_names_1 += list(m.keys())
+        all_pfms_1 += list(m.values())
+
+    all_names_2 = []
+    all_pfms_2 = []
+
+    for m, p in zip(motifs_2, prefix_2):
+        m = read_pfms(m, trim_threshold=trim_threshold, prefix=p)
+        all_names_2 += list(m.keys())
+        all_pfms_2 += list(m.values())
+
+    p, scores, offsets, overlaps, strands = tomtom(all_pfms_1, all_pfms_2)
+    df = pd.DataFrame(
+        {
+            "Query_ID": np.repeat(list(all_names_1), len(all_names_2)),
+            "Target_ID": list(all_names_2) * len(all_names_1),
+            "Optimal_offset": offsets.reshape(-1),
+            "p-value": p.reshape(-1),
+        }
+    )
+    df["E-value"] = df["p-value"] * len(all_names_2)
+    df["q-value"] = fdrcorrection(df["p-value"])[1]
+    df["Overlap"] = overlaps.flatten()
+    df["Orientation"] = ["+" if x == 0 else "-" for x in strands.reshape((-1))]
+    return df
 
 
 def consecutive(data, stepsize=1):

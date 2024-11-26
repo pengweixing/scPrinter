@@ -2177,6 +2177,7 @@ def seq_denovo_seq2print(
     n_seqlets=1000000,
     modisco_window=1000,
     leiden_resolution=1,
+    leiden_solver="modularity",
     save_path: str | Path = None,
     overwrite=False,
     verbose=False,
@@ -2267,6 +2268,7 @@ def seq_denovo_seq2print(
             n=n_seqlets,
             w=modisco_window,
             resolution=leiden_resolution,
+            solver=leiden_solver,
             launch=launch,
         )
 
@@ -2347,6 +2349,7 @@ def modisco_helper(
     n=1000000,
     w=1000,
     resolution=1.0,
+    solver="modularity",
     verbose=False,
     launch=False,
 ):
@@ -2363,9 +2366,7 @@ def modisco_helper(
         hypo = hypo_path
     else:
         hypo = hypo[0]
-    command = (
-        f"seq2print_modisco motifs -s {ohe} -a {hypo} -n {n} -o {output} -w {w} -r {resolution}"
-    )
+    command = f"seq2print_modisco motifs -s {ohe} -a {hypo} -n {n} -o {output} -w {w} -r {resolution} --solver {solver}"
     if verbose:
         if launch:
             print(launch_template)

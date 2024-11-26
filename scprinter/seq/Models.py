@@ -1,5 +1,6 @@
 from copy import deepcopy
 
+import torch
 import wandb
 from sklearn.linear_model import LinearRegression
 from tqdm.auto import tqdm, trange
@@ -742,10 +743,12 @@ class seq2PRINT(nn.Module):
                 scaler.scale(loss).backward()
                 moving_avg_loss += loss_footprint.item()
                 if (iteration + 1) % accumulate_grad == 0:
-                    # scaler.unscale_(
-                    #     optimizer
-                    # )  # Unscale gradients for clipping without inf/nan gradients affecting the model
-                    # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5.0)  # Adjust max_norm accordingly
+                    scaler.unscale_(
+                        optimizer
+                    )  # Unscale gradients for clipping without inf/nan gradients affecting the model
+                    torch.nn.utils.clip_grad_norm_(
+                        self.parameters(), max_norm=1.0
+                    )  # Adjust max_norm accordingly
 
                     scaler.step(optimizer)
                     scaler.update()

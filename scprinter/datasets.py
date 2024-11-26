@@ -84,7 +84,7 @@ def datasets():
                 "gencode_vM30_GRCm39.gff3.gz": "sha256:6f433e2676e26569a678ce78b37e94a64ddd50a09479e433ad6f75e37dc82e48",
                 "gencode_vM30_GRCm39.fa.gz": "sha256:3b923c06a0d291fe646af6bf7beaed7492bf0f6dd5309d4f5904623cab41b0aa",
                 # Tutorial files
-                "BMMCTutorial.zip": "md5:d9027cf73b558d03276483384ddad88c",
+                "scprinter_BMMCTutorial.zip": "md5:d9027cf73b558d03276483384ddad88c",
                 # Blacklist file
                 "hg38-blacklist.v2.bed.gz": "md5:83fe6bf8187a64dee8079b80f75ba289",
                 "mm10-blacklist.v2.bed.gz": "md5:4ae47e40309533c2a71de55494cda9bc",
@@ -128,7 +128,7 @@ def datasets():
                 # Blacklist file
                 "hg38-blacklist.v2.bed.gz": "https://github.com/Boyle-Lab/Blacklist/raw/master/lists/hg38-blacklist.v2.bed.gz",
                 "mm10-blacklist.v2.bed.gz": "https://github.com/Boyle-Lab/Blacklist/raw/master/lists/mm10-blacklist.v2.bed.gz",
-                "BMMCTutorial.zip": "https://drive.google.com/uc?export=download&confirm=s5vl&id=1L-9yPkNKf-IcWgubfp2Yz2oYusEVEico",
+                "scprinter_BMMCTutorial.zip": "https://zenodo.org/records/14164466/files/scprinter_BMMCTutorial.zip",
             },
         )
     return _datasets
@@ -238,7 +238,7 @@ def BMMCTutorial():
     -------
     str: path to the BMMC Tutorial data
     """
-    files = datasets().fetch("BMMCTutorial.zip", processor=giverightstothegroup)
+    files = datasets().fetch("scprinter_BMMCTutorial.zip", processor=giverightstothegroup)
     dict1 = {}
     for f in files:
         if "bed" in f:

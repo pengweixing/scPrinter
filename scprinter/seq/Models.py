@@ -747,7 +747,7 @@ class seq2PRINT(nn.Module):
                         optimizer
                     )  # Unscale gradients for clipping without inf/nan gradients affecting the model
                     torch.nn.utils.clip_grad_norm_(
-                        self.parameters(), max_norm=1.0
+                        self.parameters(), max_norm=5.0
                     )  # Adjust max_norm accordingly
 
                     scaler.step(optimizer)

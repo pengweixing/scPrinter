@@ -1,6 +1,7 @@
 import os
 import stat
 
+import pandas as pd
 import pooch
 from pooch import Decompress, Untar, Unzip
 
@@ -65,6 +66,10 @@ def datasets():
                 "CisBP_Human_FigR_Bagging": "md5:3c075c36a05e4dc2e9666d4ad9cb3c85",
                 "CisBP_Mouse_FigR_meme": "md5:45bdeee2222db8d36182b44acb63dc80",
                 "CisBP_Human_FigR_meme": "md5:97e96fb17fc015e1d15c76609167606f",
+                # TSS files
+                "TSSRanges_hg19_FigR": "md5:856efa6efbeea92333887e846ce84711",
+                "TSSRanges_hg38_FigR": "md5:1544c730295e883da1576633beb9b87a",
+                "TSSRanges_mm10_FigR": "md5:a8af354b72ef45c5f2d0fb48124ead1b",
                 # bias file
                 # "hg38Tn5Bias.h5": "md5:5ff8b43c50eb23639e3d93b5b1e8a50a",
                 "ce11Tn5Bias.tar.gz": "md5:10d8d17f94f695c06c0f66968f67b55b",
@@ -108,6 +113,9 @@ def datasets():
                 "CisBP_Human_FigR_Bagging": "https://github.com/ruochiz/FigRmotifs/raw/main/FigR_motifs_bagging_human.txt",
                 "CisBP_Mouse_FigR_meme": "https://github.com/ruochiz/FigRmotifs/raw/main/mouse_pfms_v4_meme.txt",
                 "CisBP_Human_FigR_meme": "https://github.com/ruochiz/FigRmotifs/raw/main/human_pfms_v4_meme.txt",
+                "TSSRanges_hg19_FigR": "https://github.com/ruochiz/FigRmotifs/raw/main/hg19TSSRanges.txt",
+                "TSSRanges_hg38_FigR": "https://github.com/ruochiz/FigRmotifs/raw/main/hg38TSSRanges.txt",
+                "TSSRanges_mm10_FigR": "https://github.com/ruochiz/FigRmotifs/raw/main/mm10TSSRanges.txt",
                 # bias file
                 # "hg38Tn5Bias.h5": "https://drive.google.com/uc?export=download&confirm=s5vl&id=1Ias_dP2docuXRGcoQrGHMNOlIwhgJZoJ",
                 "ce11Tn5Bias.tar.gz": "https://zenodo.org/record/7121027/files/ce11Tn5Bias.tar.gz",
@@ -274,3 +282,16 @@ FigR_motifs_bagging_human = datasets().fetch(
 )
 FigR_motifs_mouse_meme = datasets().fetch("CisBP_Mouse_FigR_meme", processor=giverightstothegroup)
 FigR_motifs_human_meme = datasets().fetch("CisBP_Human_FigR_meme", processor=giverightstothegroup)
+
+FigR_hg19TSSRanges = pd.read_csv(
+    datasets().fetch("TSSRanges_hg19_FigR", processor=giverightstothegroup), sep="\t"
+)
+FigR_hg19TSSRanges.index = FigR_hg19TSSRanges["gene_name"]
+FigR_hg38TSSRanges = pd.read_csv(
+    datasets().fetch("TSSRanges_hg38_FigR", processor=giverightstothegroup), sep="\t"
+)
+FigR_hg38TSSRanges.index = FigR_hg38TSSRanges["gene_name"]
+FigR_mm10TSSRanges = pd.read_csv(
+    datasets().fetch("TSSRanges_mm10_FigR", processor=giverightstothegroup), sep="\t"
+)
+FigR_mm10TSSRanges.index = FigR_mm10TSSRanges["gene_name"]

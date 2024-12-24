@@ -14,7 +14,7 @@ import numpy as np
 import pyBigWig
 import snapatac2 as snap
 from anndata import AnnData
-from scipy.sparse import coo_matrix, csc_matrix, csr_matrix, hstack, vstack
+from scipy.sparse import coo_matrix, csc_matrix, csr_matrix, hstack, issparse, vstack
 from tqdm.auto import tqdm, trange
 
 from .genome import Genome
@@ -300,6 +300,30 @@ def import_fragments(
     return load_printer(savename, genome)
 
 
+def mean_norm_counts_array(data):
+    """
+    Normalize the count matrix by dividing each cell by its mean count across all peaks.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        The count matrix to be normalized.
+
+    Returns
+    -------
+    The normalized count matrix.
+    """
+    sparse_input = issparse(data)
+    data = data.astype("float32")
+    _row_mean = data.mean(axis=1)
+    row_mean = np.array(_row_mean).ravel().astype(np.float32) + 0.00001
+    if sparse_input:
+        data.data = data.data / np.repeat(row_mean, data.getnnz(axis=1))
+    else:
+        data = data / row_mean[:, None]
+    return data
+
+
 def mean_norm_counts(adata):
     """
     Normalize the count matrix by dividing each cell by its mean count across all peaks.
@@ -313,8 +337,11 @@ def mean_norm_counts(adata):
     -------
     The normalization is performed in place, modifying the input AnnData object.
     """
-    xx = csr_matrix(adata.X / adata.X.mean(axis=1))
-    adata.X = xx
+    # xx = csr_matrix(adata.X / adata.X.mean(axis=1))
+    # adata.X = xx
+
+    adata.X = mean_norm_counts_array(adata.X)
+
     return adata
 
 

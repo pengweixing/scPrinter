@@ -1,7 +1,7 @@
 __version__ = "1.0.0a"
 import sys
 
-from . import chromvar, datasets, genome, motifs, peak
+from . import chromvar, datasets, dorc, genome, motifs, peak
 from . import plotting as pl
 from . import preprocessing as pp
 from . import seq

@@ -11,8 +11,8 @@ license = { file = "LICENSE" } # Ensure you have a LICENSE file in your project 
 readme = "README.md" # Ensure you have a README.md file or change to the correct file
 keywords = [] # Add some keywords related to your project
 requires-python = ">=3.8"
-urls.Source = "https://github.com/ruochiz/scPrinter"
-urls.Home-page = "https://github.com/ruochiz/scPrinter"
+urls.Source = "https://github.com/buenrostrolab/scPrinter"
+urls.Home-page = "https://github.com/buenrostrolab/scPrinterr"
 dependencies = [
     "numpy",
     "h5py",

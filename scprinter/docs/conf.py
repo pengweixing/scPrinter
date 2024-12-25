@@ -123,7 +123,7 @@ else:
     switcher_version = f"{version}"
 
 html_theme_options = {
-    "github_url": "https://github.com/broadinstitute/PRINT",
+    "github_url": "https://github.com/buenrostrolab/scPrinter",
     "navbar_end": ["version-switcher", "theme-switcher", "navbar-icon-links"],
     # "switcher": {
     #     "version_match": switcher_version,
@@ -134,7 +134,7 @@ html_theme_options = {
 
 # commit = subprocess.check_output(['git', 'rev-parse', 'HEAD']).strip().decode('ascii')
 commit = "main"
-code_url = f"https:/github.com/broadinstitute/PRINT/blob/{commit}"
+code_url = f"https://github.com/buenrostrolab/scPrinter/blob/{commit}"
 
 
 # based on numpy doc/source/conf.py

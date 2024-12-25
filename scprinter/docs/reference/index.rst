@@ -31,6 +31,7 @@ Some commonly used arguments in scprinter:
    datasets
    peak
    chromvar
+   dorc
    buencolors
    utils
    seq

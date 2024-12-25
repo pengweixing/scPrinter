@@ -55,7 +55,40 @@ def fast_gene_peak_corr(
     multimapping=False,
 ):
     """
-    Python translation of the fastGenePeakcorr function.
+    Calculate the spearman correlation between ATAC-seq peaks and gene expression with chromvar-style significance testing
+
+    Parameters
+    ----------
+    atac_adata: anndata.AnnData
+        AnnData object containing ATAC-seq data (this function would automatically subset only the shared cells)
+    rna_adata: anndata.AnnData
+        AnnData object containing RNA-seq data
+    genome: scp.genome.Genome
+        Genome object containing genome information
+    tss_df: pd.DataFrame
+        DataFrame containing TSS regions (first 3 columns as chr,start,end, and index as gene name). You can get them from scp.datasets.FigR_hg19TSSRanges; scp.datasets.FigR_hg38TSSRanges; scp.datasets.FigR_mm10TSSRanges.
+    normalize_atac: bool
+        Whether to normalize ATAC-seq data before calculating correlation
+    gene_list: list
+        List of genes to calculate correlation. If None, all genes in rna_adata will be used
+    window_pad_size: int
+        The window size (on both sizes) around TSS regions to consider for correlation calculation
+    n_jobs: int
+        Number of jobs to use for parallel processing
+    n_bg: int
+        Number of background peaks to use for significance testing
+    pval_cut: float
+        P-value cutoff for significance testing
+    pos_only: bool
+        Whether to only consider positive correlation
+    multimapping: bool
+        Whether to keep all peak-gene pair or keep only the peak-gene pair with the highest correlation
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame containing gene-peak correlation results
+
     """
     # make sure atac and rna anndata are in the same order
     shared_barcode = np.intersect1d(atac_adata.obs_names, rna_adata.obs_names)
@@ -177,18 +210,37 @@ def fast_gene_peak_corr(
         {"Gene": ob_genes, "PeakRanges": ob_peaks, "rObs": correlations_obs, "pvalZ": pvals}
     )
 
-    if pos_only:
-        results = results[results["rObs"] > 0]
-
     if not multimapping:
         results = results.loc[results.groupby("PeakRanges")["rObs"].idxmax()]
     if pval_cut:
         results = results[results["pvalZ"] <= pval_cut]
-
+    if pos_only:
+        results = results[results["rObs"] > 0]
     return results
 
 
-def dorc_j_plot(dorc, cutoff=7, label_top=25, return_gene_list=False, clean_labels=True):
+def dorc_j_plot(dorc, cutoff=7, label_top=25, return_gene_list=False):
+    """
+    A function to make the J-plot for DORCs
+
+    Parameters
+    ----------
+    dorc: pd.DataFrame
+        DataFrame containing DORC results
+    cutoff: int
+        Cutoff for the number of correlated peaks
+    label_top: int
+        Number of top genes to label
+    return_gene_list: bool
+        Whether to return the list of DORC genes
+
+
+    Returns
+    -------
+    List
+        List of DORC genes if return_gene_list is
+
+    """
     dorc_tab = dorc
     # Ensure required columns are present
     assert {"PeakRanges", "Gene", "pvalZ"}.issubset(
@@ -234,19 +286,18 @@ def dorc_j_plot(dorc, cutoff=7, label_top=25, return_gene_list=False, clean_labe
         )
 
     # Add labels
-    if clean_labels:
-        texts = []
-        for _, row in num_dorcs.iterrows():
-            if row["Label"]:
-                texts.append(plt.text(row["Index"], row["n"], row["Label"], fontstyle="italic"))
-        adjust_text(
-            texts,
-            arrowprops=dict(arrowstyle="-", color="gray", lw=0.5),
-            force_points=1.2,  # Increase repelling force on points
-            force_text=1.5,  # Increase repelling force on text
-            expand_points=(2, 2),  # Expand spacing around points
-            expand_text=(2, 2),  # Expand spacing around text
-        )
+    texts = []
+    for _, row in num_dorcs.iterrows():
+        if row["Label"]:
+            texts.append(plt.text(row["Index"], row["n"], row["Label"], fontstyle="italic"))
+    adjust_text(
+        texts,
+        arrowprops=dict(arrowstyle="-", color="gray", lw=0.5),
+        force_points=1.2,  # Increase repelling force on points
+        force_text=1.5,  # Increase repelling force on text
+        expand_points=(2, 2),  # Expand spacing around points
+        expand_text=(2, 2),  # Expand spacing around text
+    )
 
     # Customization
     plt.gca().invert_xaxis()  # Flip x-axis
@@ -269,6 +320,26 @@ def get_dorc_score(
     normalize_atac=True,
     gene_list=None,
 ):
+    """
+    Calculate the DORC score for each gene and cells
+
+    Parameters
+    ----------
+    atac_adata: anndata.AnnData
+        AnnData object containing ATAC-seq data
+    dorc: pd.DataFrame
+        DataFrame containing DORC results (post-filtering)
+    normalize_atac: bool
+        Whether to normalize ATAC-seq data before calculating correlation
+    gene_list: list
+        List of genes to calculate correlation. If None, all genes in dorc will be used
+
+    Returns
+    -------
+    annadata.AnnData
+        AnnData object containing DORC scores
+
+    """
     assert {"PeakRanges", "Gene"}.issubset(
         dorc.columns
     ), "dorc must have columns: 'PeakRanges', 'Gene'"

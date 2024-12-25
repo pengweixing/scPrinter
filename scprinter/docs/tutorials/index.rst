@@ -10,3 +10,4 @@
    R_scprinter
    gpu_umap
    gpu_chromvar
+   tutorial_dorc

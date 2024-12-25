@@ -7,8 +7,8 @@ The chromvar in python with GPU acceleration when available.
 Currently support the main compute_deviation function, and bagging
 deviation functions.
 
-Footprinting
-~~~~~~~~~~~~
+Chromvar Functions
+~~~~~~~~~~~~~~~~~~
 
 .. autosummary::
    :toctree: _autosummary

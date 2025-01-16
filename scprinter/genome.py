@@ -531,7 +531,7 @@ GRCm38 = Genome(
 mm10 = GRCm38
 
 
-mm39_genome = Genome(
+mm39 = Genome(
     name="mm39",
     chrom_sizes={
         "chr1": 195154279,
@@ -558,8 +558,8 @@ mm39_genome = Genome(
     },
     gff_file="gencode_vM30_GRCm39.gff3.gz",
     fa_file="gencode_vM30_GRCm39.fa.gz",
-    bias_file="/data/rzhang/mm39/mm39Tn5Bias.h5",
-    blacklist_file="/data/rzhang/mm39/mm39.excluderanges.bed",
-    bg=(0.29149763779592625, 0.2083275235867118, 0.20834346947899296, 0.291831369138369),
+    bias_file="mm39Tn5Bias.h5",
+    blacklist_file="mm39.excluderanges.bed",
+    bg=(0.29149562991965305, 0.20831919210041502, 0.20833700706759098, 0.29184817091234094),
     splits=mm10_splits,
 )

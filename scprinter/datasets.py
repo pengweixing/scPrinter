@@ -79,6 +79,7 @@ def datasets():
                 "mm10Tn5Bias.tar.gz": "md5:901b928946b65e7bfba3a93e085f19f0",
                 "panTro6Tn5Bias.tar.gz": "md5:ba208a4cdc2e1fc09d66cac44e85e001",
                 "sacCer3Tn5Bias.tar.gz": "md5:ed811aabe1ffa4bdb1520d4b25ee9289",
+                "mm39Tn5Bias.h5": "md5:1782f01f170982ea595228f7820f1d17",
                 # Genome files
                 "gencode_v41_GRCh37.gff3.gz": "sha256:df96d3f0845127127cc87c729747ae39bc1f4c98de6180b112e71dda13592673",
                 "gencode_v41_GRCh37.fa.gz": "sha256:94330d402e53cf39a1fef6c132e2500121909c2dfdce95cc31d541404c0ed39e",
@@ -93,6 +94,7 @@ def datasets():
                 # Blacklist file
                 "hg38-blacklist.v2.bed.gz": "md5:83fe6bf8187a64dee8079b80f75ba289",
                 "mm10-blacklist.v2.bed.gz": "md5:4ae47e40309533c2a71de55494cda9bc",
+                "mm39.excluderanges.bed": "md5:9445a55bcebb3940ad98178370980318",
             },
             urls={
                 "dispersion_model_py.h5": "https://drive.google.com/uc?export=download&id=1O7zGvmJIArJjLooW0pzZyEbm2AaFE2bg",
@@ -123,6 +125,7 @@ def datasets():
                 "dm6Tn5Bias.tar.gz": "https://zenodo.org/record/7121027/files/dm6Tn5Bias.tar.gz",
                 "hg38Tn5Bias.tar.gz": "https://zenodo.org/record/7121027/files/hg38Tn5Bias.tar.gz",
                 "mm10Tn5Bias.tar.gz": "https://zenodo.org/record/7121027/files/mm10Tn5Bias.tar.gz",
+                "mm39Tn5Bias.h5": "https://zenodo.org/records/14164466/files/mm39Tn5Bias.h5",
                 "panTro6Tn5Bias.tar.gz": "https://zenodo.org/record/7121027/files/panTro6Tn5Bias.tar.gz",
                 "sacCer3Tn5Bias.tar.gz": "https://zenodo.org/record/7121027/files/sacCer3Tn5Bias.tar.gz",
                 "gencode_v41_GRCh37.gff3.gz": "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_41/GRCh37_mapping/gencode.v41lift37.basic.annotation.gff3.gz",
@@ -136,6 +139,7 @@ def datasets():
                 # Blacklist file
                 "hg38-blacklist.v2.bed.gz": "https://github.com/Boyle-Lab/Blacklist/raw/master/lists/hg38-blacklist.v2.bed.gz",
                 "mm10-blacklist.v2.bed.gz": "https://github.com/Boyle-Lab/Blacklist/raw/master/lists/mm10-blacklist.v2.bed.gz",
+                "mm39.excluderanges.bed": "https://zenodo.org/records/14164466/files/mm39.excluderanges.bed",
                 "scprinter_BMMCTutorial.zip": "https://zenodo.org/records/14164466/files/scprinter_BMMCTutorial.zip",
             },
         )

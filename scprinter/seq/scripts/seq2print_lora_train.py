@@ -625,7 +625,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         overwrite=True,
         verbose=True,
         launch=True,
-        lora_ids=list(np.arange(num_cell)),
+        lora_ids=[i for i in range(num_cell)],
     )
     foot_hypo = scp.tl.seq_attr_seq2print(
         region_path=peak_file,
@@ -639,7 +639,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         overwrite=True,
         verbose=True,
         launch=True,
-        lora_ids=list(np.arange(num_cell)),
+        lora_ids=[i for i in range(num_cell)],
     )
     acc_model = torch.load(f"{model_dir}/{savename}-{wandb_run_name}.pt", map_location="cpu")
     count_hypo = np.load(count_hypo)

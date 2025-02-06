@@ -12,14 +12,20 @@ import itertools
 import json
 import math
 import pickle
+import random
 import warnings
+from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from functools import partial
 from typing import Literal
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import pyranges
+import pysam
+import seaborn as sns
 import torch
+from matplotlib.gridspec import GridSpec
 from scipy.sparse import csc_matrix, vstack
 from scipy.stats import zscore
 from sklearn.metrics import pairwise_distances
@@ -881,6 +887,140 @@ def get_footprint_score(
         # return adata
 
 
+def resolve_region_start_end(regions):
+    import bioframe
+
+    regions = regions.copy()
+    regions.columns = ["chrom", "start", "end"] + list(regions.columns[3:])
+    regions = bioframe.cluster(regions)  # group regions that are overlapped
+    regions["fake_id"] = np.arange(len(regions))
+    regions = regions.sort_values(by=["chrom", "start", "end"])
+    cluster_stats = regions.drop_duplicates("cluster")
+    cluster_stats = cluster_stats.sort_values(by=["chrom", "start", "end"])
+    order_of_cluster = np.array(cluster_stats["cluster"])
+    aa = regions.groupby("cluster")
+
+    region_starts = np.zeros(len(regions)).astype("int")
+    region_ends = np.zeros(len(regions)).astype("int")
+
+    for cluster in tqdm(order_of_cluster, dynamic_ncols=True):
+        region_temp = aa.get_group(cluster)
+        chroms, starts, ends = (
+            np.array(region_temp["chrom"]),
+            np.array(region_temp["start"]),
+            np.array(region_temp["end"]),
+        )
+        mask = np.array(region_temp["fake_id"])
+        if len(mask) == 1:
+            # No overlapping at all
+            region_starts[mask[0]] = 0
+            region_ends[mask[0]] = ends[0] - starts[0]
+        else:
+            # Overlapping
+            for i, m in enumerate(mask[:-1]):
+                region_starts[m] = 0
+                region_ends[m] = starts[i + 1] - starts[i]
+            region_starts[mask[-1]] = 0
+            region_ends[mask[-1]] = ends[-1] - starts[-1]
+    return region_starts, region_ends
+
+
+def write_footprint(f, footprint_data, chrom, start, region_select_start, region_select_end):
+    strs = []
+    for bp_idx in range(
+        region_select_start, region_select_end
+    ):  # Only processing positions 100 to 899
+        rounded_values = footprint_data[:, bp_idx]  # Extract values for each scale
+
+        # # Round values based on threshold and create BED rows if not all zero
+        # rounded_values = np.where(scale_values >= 0.1, np.round(scale_values, 3),
+        #                           0)  # Set values below 0.1 to zero
+        if any(rounded_values):  # Check if any non-zero values exist
+            pos_start = start + bp_idx
+            pos_end = pos_start + 1  # BED format single base pair entry
+            bed_row = [chrom, pos_start, pos_end] + list(rounded_values)
+            # Write row to the pseudobulk file
+            strs.append("\t".join(map(str, bed_row)))
+    if len(strs) > 0:
+        strs = "\n".join(strs) + "\n"
+        f.write(strs)
+        sys.stdout.flush()
+
+
+def export_footprint_bed3(
+    generator, group_names, save_path, regions_select_start, regions_select_end, sort_n_jobs=16
+):
+    if not os.path.exists(save_path):
+        os.makedirs(save_path, exist_ok=True)
+
+    filehandle_dict = {}
+    # Iterate over the groups based on provided cell_grouping and group_names
+    for group_name in group_names:
+        # Open the file for this pseudobulk using the name from group_names
+        pseudobulk_filename = os.path.join(save_path, f"{group_name}.bed")
+        f = open(pseudobulk_filename, "w")
+        # Write the custom header line with the pseudobulk name
+        track_line = f'#track type=shoebox name="{group_name}" viewLimits=0:3 color=0,0,255\n'
+        f.write(track_line)
+        sys.stdout.flush()
+        filehandle_dict[group_name] = f
+    ct = 0
+    # Loop through data generated from multimode footprints and region IDs
+    bar = None
+
+    threadpool = {n: ThreadPoolExecutor(max_workers=1) for n in group_names}
+    # def write(f, bed_row):
+    #     f.write('\t'.join(map(str, bed_row)) + '\n')
+
+    for multimode_footprints, regionIDs in generator:
+        rounded_multimode_footprints = np.where(
+            multimode_footprints >= 0.1, np.round(multimode_footprints, 3), 0
+        )  # Set values below 0.1 to zero
+        for multimode_footprint, regionID in zip(rounded_multimode_footprints, regionIDs):
+            if bar is None:
+                bar = trange(
+                    len(regions_select_start), desc="Exporting Footprints", dynamic_ncols=True
+                )
+            bar.update(1)
+            regionID = str(regionID)
+            # to-do: multithread write...
+            # Process each region for chromosomal coordinates and footprints
+            chrom, positions = regionID.split(":")
+            start, end = map(int, positions.split("-"))
+            region_select_start = regions_select_start[ct]
+            region_select_end = regions_select_end[ct]
+            ct += 1
+
+            for i, group_name in enumerate(group_names):
+                footprint_data = multimode_footprint[i]
+                f = filehandle_dict[group_name]
+                threadpool[group_name].submit(
+                    write_footprint,
+                    f,
+                    footprint_data,
+                    chrom,
+                    start,
+                    region_select_start,
+                    region_select_end,
+                )
+        del multimode_footprints, regionIDs
+        bar.refresh()
+        gc.collect()
+    sort_pool = ProcessPoolExecutor(max_workers=sort_n_jobs)
+    p_list = []
+    for i, group_name in enumerate(group_names):
+        filehandle_dict[group_name].close()
+        # Sort, compress, and index the BED file
+        func1 = partial(pysam.tabix_index, preset="bed", force=True, line_skip=1, meta_char="#")
+        p_list.append(sort_pool.submit(func1, os.path.join(save_path, f"{group_name}.bed")))
+    bar = trange(len(group_names), desc="Sorting Bed Files", dynamic_ncols=True)
+    for p in as_completed(p_list):
+        rs = p.result()
+        bar.update(1)
+    bar.close()
+    sort_pool.shutdown(wait=True)
+
+
 def footprint_generator(
     printer: scPrinter,
     cell_grouping: list[str] | list[list[str]] | np.ndarray,
@@ -1351,8 +1491,8 @@ def seq_lora_model_config(
     fold=0,
     model_config: dict | str = {},
     additional_lora_config={},
-    additional_group_attr: np.ndarray | pd.DataFrame = None,
-    additional_group_bias_attr: np.ndarray | pd.DataFrame = None,
+    additional_group_attr: np.ndarray = None,
+    additional_group_bias_attr: np.ndarray = None,
     path_swap=None,
     config_save_path: str | Path = None,
 ):
@@ -1384,9 +1524,9 @@ def seq_lora_model_config(
         The fold for splitting the data. Default is 0.
     model_config : dict | str | Path
         The model_config you used to for the pretrained seq2PRINT model
-    additional_group_attr : np.ndarray | pd.DataFrame
+    additional_group_attr : np.ndarray
         The additional group attributes for the LoRA model. If it is a numpy array, it should have the shape of (n_groups, n_features).
-    additional_group_bias_attr: np.ndarray | pd.DataFrame
+    additional_group_bias_attr: np.ndarray
         The additional group bias attributes for the LoRA model. If it is a numpy array, it should have the shape of (n_groups, n_features).
     additional_lora_config : dict, optional
         Additional configurations for the LoRA model. Default is an empty dictionary.
@@ -1614,7 +1754,7 @@ def launch_seq2print(
     temp_dir: str | Path
         The temporary directory to store the intermediate files
     model_dir: str | Path
-        The directory to store the trained model weights
+         The directory to store the trained model weights
     data_dir: str | Path
         The directory that the peaks, insertions etc are saved. This will be appended to all the paths in the model configuration dictionary
     gpus: int | list[int]
@@ -1745,6 +1885,7 @@ def seq_attr_seq2print(
     save_norm=False,
     overwrite=False,
     lora_ids: list | list[list] = None,
+    save_group_names: list | list[list] = None,
     lora_config: dict | str | None = None,
     group_names: list | list[list] | str | None = None,
     verbose=True,
@@ -1783,11 +1924,13 @@ def seq_attr_seq2print(
         Whether to just save the normalization factor from the sampled summits
     overwrite: bool
         Whether to overwrite the existing files
-    lora_ids: list | None
-        The ids of the pseudobulks in the lora model you want to calculate the sequence attributions for (If you are not sure, set this as None and provide the group_names and lora_config)
+    lora_ids: list | list[list] | None
+        The ids of the pseudobulks in the lora model you want to calculate the sequence attributions for (If you are not sure, set this as None and provide the group_names and lora_config). This can be a list of list because you can collapse multiple groups during LoRA finetuning into one model for inference.
+    save_group_names: list | None
+        The save names for each group (specified by lora_ids), same length as lora_ids, if None, it will be infered from lora_ids with '-' connecting all ids. This should be the same as the one you provided to seq_tfbs_seq2print However, if you are collapsing many groups of lora id into one model, please provide a name or a list of names, or you might run into filename too long error.
     lora_config: dict | str | None
         The lora configuration dictionary or the path to the configuration dictionary
-    group_names: list | str | None
+    group_names: list | list[list] | str | None
         The group names, will be used to save the TF binding scores and will be used to query the lora_ids
     verbose: bool
         Verbosity of the command string
@@ -1818,6 +1961,7 @@ def seq_attr_seq2print(
                 save_norm=save_norm,
                 overwrite=overwrite,
                 lora_ids=lora_ids,
+                save_group_names=save_group_names,
                 lora_config=lora_config,
                 group_names=group_names,
                 verbose=verbose,
@@ -1881,9 +2025,17 @@ def seq_attr_seq2print(
             lora_ids = [[lora_ids]]
         if type(lora_ids[0]) is int:
             lora_ids = [[x] for x in lora_ids]
-        lora_ids = ",".join(["-".join([str(y) for y in x]) for x in lora_ids])
+        lora_ids_str = ",".join(["-".join([str(y) for y in x]) for x in lora_ids])
+        if save_group_names is None:
+            save_group_names = lora_ids_str
+        else:
+            assert len(lora_ids) == len(
+                save_group_names
+            ), "lora_ids and save_group_names must have the same length"
+            save_group_names = ",".join([str(x) for x in save_group_names])
 
-        command += f" --models {lora_ids}"
+        command += f" --models {lora_ids_str}"
+        command += f" --save_names {save_group_names}"
     if preset is not None:
         command += f" --model_norm {preset}"
     if sample is not None:
@@ -1914,7 +2066,7 @@ def seq_attr_seq2print(
                     f"{model_path}_{save_key}" + (f"_sample{sample}" if sample is not None else ""),
                     f"model_{id}.hypo.{wrapper}.{method}_{nth_output}_.{decay}.npz",
                 )
-                for id in lora_ids
+                for id in save_group_names
             ]
     else:
         return os.path.join(
@@ -1933,6 +2085,7 @@ def seq_tfbs_seq2print(
     model_path: str | Path | None | list = None,
     lora_config: dict | str | None = None,
     group_names: list | str | list[list] | None = None,
+    save_group_names: list | str | None = None,
     save_path: str | Path = None,
     overwrite_seqattr=False,
     post_normalize=False,
@@ -1963,8 +2116,10 @@ def seq_tfbs_seq2print(
         The path or list of paths to the model. When provided as a list, the sequence attribution scores are averaged across the models
     lora_config: dict | str | None
         The lora configuration dictionary or the path to the configuration dictionary, must be provided when model_type is lora
-    group_names: list | str | None
-        The group names, will be used to save the TF binding scores
+    group_names: list | str | list[list] | None
+        The group names, be consistent with the ones you input when creating lora config. Note that seq2PRINT supports merging multiple groups into one model.
+    save_group_names: list | str | None
+        The final group name to save the model, it wouldn't matter if you are not merging multiple group. If you are merging, for instance group 1,2,3,4,5 into a new group, perhaps naming it as CD4 etc would be easier to interpret. When set as None, we will infer one by adding '-' in between the group names, but notice that it might trigger filename too long error.
     save_path: str | Path
         The path to save the TF binding scores
     overwrite_seqattr: bool
@@ -1993,9 +2148,15 @@ def seq_tfbs_seq2print(
         gpus = [gpus]
     if type(group_names) not in [np.ndarray, list]:
         group_names = [group_names]
+    if type(save_group_names) not in [np.ndarray, list]:
+        save_group_names = [save_group_names] * len(group_names)
     if type(group_names[0]) not in [np.ndarray, list]:
         group_names = [[x] for x in group_names]
 
+    for i in range(len(group_names)):
+        if save_group_names[i] is None:
+            save_group_names[i] = ["-".join(x) for x in group_names[i]]
+    save_group_names = [str(x) for x in save_group_names]
     if return_adata:
         assert save_key is not None, "Please provide the save_key if you are using return_adata"
         assert launch is True, "Please set launch as True if you are using return_adata"
@@ -2037,8 +2198,8 @@ def seq_tfbs_seq2print(
             seq_attr = []
 
             if overwrite_seqattr:
-                for id in lora_ids:
-                    id_str = "-".join([str(x) for x in id])
+                for id, id_str in zip(lora_ids, save_group_names):
+                    # id_str = "-".join([str(x) for x in id])
                     for model in model_path:
                         seq_attr_path = os.path.join(
                             f"{model}_{save_key}",
@@ -2052,20 +2213,22 @@ def seq_tfbs_seq2print(
 
             for model in model_path:
                 generate_seq_attr = []
-                for id in lora_ids:
-                    id_str = "-".join([str(x) for x in id])
+                for id, id_str in zip(lora_ids, save_group_names):
+                    # id_str = "-".join([str(x) for x in id])
                     seq_attr_path = os.path.join(
                         f"{model}_{save_key}",
                         f"model_{id_str}." + template if id[0] is not None else template,
                     )
                     seq_attr_path_npz = seq_attr_path.replace(".bigwig", ".npz")
-                    # if os.path.exists(seq_attr_path_npz):
-                    #     read_numpy = True
-                    if return_adata:
+                    if os.path.exists(seq_attr_path_npz):
+                        read_numpy = True
+                    if return_adata and (not os.path.exists(seq_attr_path)):
                         read_numpy = True
 
-                    if (not os.path.exists(seq_attr_path)) and (
-                        not os.path.exists(seq_attr_path_npz)
+                    if (
+                        (not os.path.exists(seq_attr_path))
+                        and (not os.path.exists(seq_attr_path_npz))
+                        or (read_numpy and (not os.path.exists(seq_attr_path_npz)))
                     ):
                         all_pass = False
                         generate_seq_attr.append(id)
@@ -2084,6 +2247,7 @@ def seq_tfbs_seq2print(
                         overwrite=overwrite_seqattr,
                         verbose=False,
                         lora_ids=generate_seq_attr,
+                        save_group_names=save_group_names,
                         launch=launch,
                         numpy_mode=return_adata,
                         save_key=save_key,
@@ -2112,9 +2276,7 @@ def seq_tfbs_seq2print(
     foot = " ".join(foot)
     count_pt = pretrained_seq_TFBS_model0
     foot_pt = pretrained_seq_TFBS_model1
-    save_name = ",".join(
-        [os.path.join(save_path, "-".join([str(y) for y in x])) for x in group_names]
-    )
+    save_name = ",".join([os.path.join(save_path, str(x)) for x in save_group_names])
     gpus = " ".join([str(x) for x in gpus])
     command = (
         f"seq2print_tfbs --count_pt {count_pt} --foot_pt {foot_pt} "
@@ -2122,7 +2284,8 @@ def seq_tfbs_seq2print(
         f"--peaks {region_path} --save_name {save_name} --gpus {gpus}"
     )
     if lora_ids[0][0] is not None:
-        lora_ids_str = ",".join(["-".join([str(y) for y in x]) for x in lora_ids])
+        # lora_ids_str = ",".join(["-".join([str(y) for y in x]) for x in lora_ids])
+        lora_ids_str = ",".join(save_group_names)
         command += f" --lora_ids {lora_ids_str}"
 
     if return_adata:
@@ -2149,9 +2312,13 @@ def seq_tfbs_seq2print(
         results = np.load(f"{save_key}TFBS.npz")["tfbs"]
 
         print("obs=groups, var=regions")
-        lora_ids_str = ["-".join([str(y) for y in x]) for x in lora_ids]
-        df_obs = pd.DataFrame({"name": group_names, "id": lora_ids_str})
-        df_obs.index = ["-".join([str(x) for x in group_name]) for group_name in group_names]
+        # lora_ids_str = ["-".join([str(y) for y in x]) for x in lora_ids]
+        lora_ids_str = save_group_names
+        df_obs = pd.DataFrame(
+            {"save_group_name": save_group_names, "id": lora_ids_str, "group_name": group_names}
+        )
+        df_obs.index = save_group_names
+
         df_var = regions
         df_var["identifier"] = region_identifiers
         df_var.index = region_identifiers
@@ -2510,10 +2677,8 @@ def modisco_report(
     meme_motif: os.PathLike | Literal["human", "mouse"],
     motif_prefix: str | list[str] = "",
     delta_effect_path: str | Path | list[Path] = None,
-    is_writing_tomtom_matrix: bool = True,
     top_n_matches=3,
     trim_threshold=0.3,
-    trim_min_length=3,
     selected_patterns: list[str] | list[list[str]] | None = None,
 ):
     """
@@ -2584,6 +2749,5 @@ def modisco_report(
         delta_effect_path,
         motif_prefix,
         trim_threshold,
-        trim_min_length,
         selected_patterns,
     )

@@ -29,19 +29,19 @@ The original multi-scale footprinting algorithm is described in the following pa
 
 .. code-block::
 
-  @article{hu2023single,
-  title={Single-cell multi-scale footprinting reveals the modular organization of DNA regulatory elements},
-  author={Hu, Yan and Ma, Sai and Kartha, Vinay K and Duarte, Fabiana M and Horlbeck, Max and Zhang, Ruochi and Shrestha, Rojesh and Labade, Ajay and Kletzien, Heidi and Meliki, Alia and others},
-  journal={bioRxiv},
-  pages={2023--03},
-  year={2023},
-  publisher={Cold Spring Harbor Laboratory} }
+  @article{hu2025multiscale,
+  title={Multiscale footprints reveal the organization of cis-regulatory elements},
+  author={Hu, Yan and Horlbeck, Max A and Zhang, Ruochi and Ma, Sai and Shrestha, Rojesh and Kartha, Vinay K and Duarte, Fabiana M and Hock, Conrad and Savage, Rachel E and Labade, Ajay and others},
+  journal={Nature},
+  pages={1--8},
+  year={2025},
+  publisher={Nature Publishing Group UK London}
+}
 
 
 .. toctree::
    :maxdepth: 3
    :hidden:
 
-   install
    tutorials/index
    reference/index

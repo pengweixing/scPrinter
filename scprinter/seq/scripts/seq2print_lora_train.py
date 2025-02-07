@@ -567,7 +567,7 @@ def entry(config=None, wandb_run_name="", enable_wandb=True):
         use_wandb=enable_wandb,
         accumulate_grad=accumulate_grad,
         batch_size=batch_size,
-        coverage_warming=2 if lora_mode else 0,
+        coverage_warming=10 if lora_mode else 0,
     )
     if ema:
         del acc_model

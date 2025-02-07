@@ -34,6 +34,7 @@ parser.add_argument(
     "--save_norm", action="store_true", default=False, help="just save the normalization factor"
 )
 parser.add_argument("--save_key", type=str, default="deepshap", help="key for saving")
+parser.add_argument("--save_names", type=str, default="", help="save names")
 
 
 # ((start != 0) or (end != n_summits))
@@ -44,6 +45,7 @@ def save_attrs(
     norm_key,
     acc_model,
     id,
+    id_str,
     wrapper,
     method,
     extra,
@@ -57,24 +59,27 @@ def save_attrs(
     chrom_size,
     save_dir,
 ):
-
+    print("saving attrs")
     # slice the center regions of the projected attributions
     vs = projected_attributions[..., 520:-520]
 
+    if verbose:
+        print(
+            "the estimated norm on prem is",
+            np.quantile(vs, 0.05),
+            np.quantile(vs, 0.5),
+            np.quantile(vs, 0.95),
+        )
+
     # fetch proper normalization factors
     if norm_key is not None:
+        print("using pre-calculated norm key", norm_key)
         if norm_key == "count":
             low, median, high = acc_model.count_norm
         elif norm_key == "footprint":
             low, median, high = acc_model.foot_norm
-        if verbose:
-            print(
-                "the estimated norm on prem is",
-                np.quantile(vs, 0.05),
-                np.quantile(vs, 0.5),
-                np.quantile(vs, 0.95),
-            )
     else:
+        print("using calculated norm from the model")
         low, median, high = (
             np.quantile(vs, 0.05),
             np.quantile(vs, 0.5),
@@ -83,19 +88,19 @@ def save_attrs(
 
     # Create the proper file name,
     # if we are doing the lora model, we need to add the model_id
-    filename_template = f"model_{id}." if id is not None else ""
+    filename_template = f"model_{id_str}." if id[0] is not None else ""
     filename_template += "{type}."
     filename_template += f"{wrapper}.{method}{extra}.{decay}."
     # If we are doing the bulk model with part of the peaks (parallel in terms of peaks)
     # we need to add the start and end
-    if (id is None) and partition_by_region:
+    if (id[0] is None) and partition_by_region:
         filename_template += f"{start}-{end}."
     else:
         # Only normalize the projected attributions if we have all the results already,
         projected_attributions = (projected_attributions - median) / (high - low)
         if verbose:
             print("normalizing", low, median, high)
-
+    print("filename_template", filename_template)
     if write_bigwig:
         attribution_to_bigwig(
             projected_attributions,
@@ -121,6 +126,7 @@ def save_attrs(
         ),
         hypo,
     )
+    print(filename_template.replace("{type}", "hypo") + "npz")
 
 
 def main():
@@ -135,8 +141,12 @@ def main():
         ids = [i.split("-") for i in ids]
         print(ids[:5], ids[-5:])
         ids = [[int(j) for j in i] for i in ids]
+        id_strs = args.save_names.split(",")
+        assert len(id_strs) == len(ids)
     else:
         ids = [[None]]
+        id_strs = [""]
+
     print(ids)
     gpus = args.gpus
     wrapper = args.wrapper
@@ -216,8 +226,9 @@ def main():
         n_split = len(gpus)
         if ids[0][0] is not None:  # This is the lora mode, parallel in terms of lora models
             unfinished_ids = []
-            for id in ids:
-                id_str = "-".join([str(x) for x in id])
+            unfinished_id_strs = []
+            for id, id_str in zip(ids, id_strs):
+                # id_str = "-".join([str(x) for x in id])
                 if os.path.exists(
                     os.path.join(
                         save_dir,
@@ -228,8 +239,10 @@ def main():
                     continue
                 else:
                     unfinished_ids.append(id)
-            unfinished_ids = np.array(unfinished_ids)
+                    unfinished_id_strs.append(id_str)
+            unfinished_ids = np.array(unfinished_ids, dtype="object")
             ids_batch = np.array_split(unfinished_ids, n_split)
+            ids_strs_batch = np.array_split(unfinished_id_strs, n_split)
 
             commands = [
                 [
@@ -254,12 +267,16 @@ def main():
                     str(args.decay),
                     "--save_key",
                     args.save_key,
+                    "--save_names",
+                    ",".join(list(ids_str_batch)),
                 ]
                 + (["--overwrite"] if args.overwrite else [])
                 + (["--write_numpy"] if args.write_numpy else [])
                 + (["--model_norm", args.model_norm] if args.model_norm is not None else [])
                 + (["--silent"] if args.silent else [])
-                for i, (id_batch, gpu) in enumerate(zip(ids_batch, gpus))
+                for i, (id_batch, ids_str_batch, gpu) in enumerate(
+                    zip(ids_batch, ids_strs_batch, gpus)
+                )
             ]
             pool = ProcessPoolExecutor(max_workers=len(gpus))
             for gpu, command in zip(gpus, commands):
@@ -345,7 +362,8 @@ def main():
                     hypo=hypo,
                     norm_key=norm_key,
                     acc_model=acc_model,
-                    id=None,  # pass none because it's definitely parallel in peaks mode
+                    id=[None],  # pass none because it's definitely parallel in peaks mode
+                    id_str="",
                     wrapper=wrapper,
                     method=method,
                     extra=extra,
@@ -376,10 +394,12 @@ def main():
 
     else:
         # single gpu
-        bar = tqdm(ids)
+        bar = trange(len(ids))
         dataset.cache()  # only cache when single gpu and can
-        for id in bar:
-            id_str = "-".join([str(i) for i in id]) if id[0] is not None else None
+        for index in bar:
+            id = ids[index]
+            id_str = id_strs[index]
+            # id_str = "-".join([str(i) for i in id]) if id[0] is not None else None
             bar.set_description(f"working on {id_str}")
             if os.path.exists(
                 os.path.join(
@@ -452,7 +472,8 @@ def main():
                 hypo=hypo,
                 norm_key=norm_key,
                 acc_model=acc_model,
-                id=id_str,
+                id=id,
+                id_str=id_str,
                 wrapper=wrapper,
                 method=method,
                 extra=extra,

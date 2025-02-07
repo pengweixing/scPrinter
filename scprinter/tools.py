@@ -2211,7 +2211,7 @@ def seq_tfbs_seq2print(
 
     for i in range(len(group_names)):
         if save_group_names[i] is None:
-            save_group_names[i] = ["-".join(x) for x in group_names[i]]
+            save_group_names[i] = "-".join(group_names[i])
     save_group_names = [str(x) for x in save_group_names]
     if return_adata:
         assert save_key is not None, "Please provide the save_key if you are using return_adata"

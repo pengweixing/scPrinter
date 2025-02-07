@@ -30,6 +30,7 @@ from scipy.sparse import csc_matrix, vstack
 from scipy.stats import zscore
 from sklearn.metrics import pairwise_distances
 from tqdm.auto import tqdm, trange
+from tqdm.contrib.concurrent import process_map
 
 from . import TFBS, footprint, motifs
 from .datasets import (
@@ -925,33 +926,78 @@ def resolve_region_start_end(regions):
     return region_starts, region_ends
 
 
-def write_footprint(f, footprint_data, chrom, start, region_select_start, region_select_end):
-    strs = []
-    for bp_idx in range(
-        region_select_start, region_select_end
-    ):  # Only processing positions 100 to 899
-        rounded_values = footprint_data[:, bp_idx]  # Extract values for each scale
-
-        # # Round values based on threshold and create BED rows if not all zero
-        # rounded_values = np.where(scale_values >= 0.1, np.round(scale_values, 3),
-        #                           0)  # Set values below 0.1 to zero
-        if any(rounded_values):  # Check if any non-zero values exist
-            pos_start = start + bp_idx
-            pos_end = pos_start + 1  # BED format single base pair entry
-            bed_row = [chrom, pos_start, pos_end] + list(rounded_values)
-            # Write row to the pseudobulk file
-            strs.append("\t".join(map(str, bed_row)))
-    if len(strs) > 0:
-        strs = "\n".join(strs) + "\n"
-        f.write(strs)
-        sys.stdout.flush()
-
-
 def export_footprint_bed3(
-    generator, group_names, save_path, regions_select_start, regions_select_end, sort_n_jobs=16
+    printer: scPrinter,
+    cell_grouping: list[str] | list[list[str]] | np.ndarray | "bigwig",
+    group_names: list[str] | str,
+    regions: str | Path | pd.DataFrame | pyranges.PyRanges | list[str],
+    region_width: int | None = None,
+    modes: (
+        int | list[int] | np.ndarray | None
+    ) = None,  # int | list of int. This is used for retrieving the correct dispersion model.
+    footprintRadius: int | list[int] | np.ndarray | None = None,  # Radius of the footprint region
+    flankRadius: (
+        int | list[int] | np.ndarray | None
+    ) = None,  # Radius of the flanking region (not including the footprint region)
+    smoothRadius: (
+        int | list[int] | np.ndarray | None
+    ) = 5,  # Radius of the smoothing region (not including the footprint region)
+    n_jobs: int = 16,  # Number of cores to use
+    save_path: str = None,
+    chunksize: int | None = None,
+    buffer_size: int | None = None,
+    footprint_save_cutoff: float = 0.1,
 ):
-    if not os.path.exists(save_path):
-        os.makedirs(save_path, exist_ok=True)
+    """ """
+    with warnings.catch_warnings(), torch.no_grad():
+        if not os.path.exists(save_path):
+            os.makedirs(save_path, exist_ok=True)
+
+        warnings.simplefilter("ignore")
+        modes, footprintRadius, flankRadius, smoothRadius = _unify_modes(
+            modes, footprintRadius, flankRadius, smoothRadius
+        )
+        if type(group_names) not in [np.ndarray, list]:
+            group_names = [group_names]
+            if cell_grouping != "bigwig":
+                cell_grouping = [cell_grouping]
+        regions = regionparser(regions, printer, region_width)
+        regions = regions.sort_values(by=list(regions.columns[:3]))
+        region_width = int(regions.iloc[0]["End"] - regions.iloc[0]["Start"])
+        regions_select_start, regions_select_end = resolve_region_start_end(
+            resize_bed_df(regions, region_width - 200)
+        )
+        regions_select_start += 100
+
+        if chunksize is None:
+            small_chunk_size = min(max(int(16000 / len(group_names)), 100), 10000)
+        else:
+            small_chunk_size = chunksize
+        if buffer_size is None:
+            collect_num = int(16000 / len(group_names) * 100 / small_chunk_size)
+        else:
+            collect_num = buffer_size
+        print(small_chunk_size, collect_num)
+
+        modes = list(modes)
+
+        generator = footprint_generator(
+            printer,
+            cell_grouping,
+            regions,
+            region_width,
+            modes,
+            footprintRadius,
+            flankRadius,
+            smoothRadius,
+            n_jobs,
+            small_chunk_size,
+            collect_num,
+            async_generator=False,
+            return_pval=True,
+            bigwigmode=False,
+            collapse_barcodes=False,
+        )
 
     filehandle_dict = {}
     # Iterate over the groups based on provided cell_grouping and group_names
@@ -964,18 +1010,34 @@ def export_footprint_bed3(
         f.write(track_line)
         sys.stdout.flush()
         filehandle_dict[group_name] = f
-    ct = 0
+
     # Loop through data generated from multimode footprints and region IDs
     bar = None
 
     threadpool = {n: ThreadPoolExecutor(max_workers=1) for n in group_names}
-    # def write(f, bed_row):
-    #     f.write('\t'.join(map(str, bed_row)) + '\n')
 
+    def write_footprint(f, footprint_data, chrom, start, region_select_start, region_select_end):
+        strs = []
+        for bp_idx in range(
+            region_select_start, region_select_end
+        ):  # Only processing positions 100 to 899
+            rounded_values = footprint_data[:, bp_idx]  # Extract values for each scale
+            if any(rounded_values):  # Check if any non-zero values exist
+                pos_start = start + bp_idx
+                pos_end = pos_start + 1  # BED format single base pair entry
+                bed_row = [chrom, pos_start, pos_end] + list(rounded_values)
+                # Write row to the pseudobulk file
+                strs.append("\t".join(map(str, bed_row)))
+        if len(strs) > 0:
+            strs = "\n".join(strs) + "\n"
+            f.write(strs)
+            sys.stdout.flush()
+
+    ct = 0
     for multimode_footprints, regionIDs in generator:
         rounded_multimode_footprints = np.where(
-            multimode_footprints >= 0.1, np.round(multimode_footprints, 3), 0
-        )  # Set values below 0.1 to zero
+            multimode_footprints >= footprint_save_cutoff, np.round(multimode_footprints, 3), 0
+        )  # Set values below footprint_save_cutoff to zero
         for multimode_footprint, regionID in zip(rounded_multimode_footprints, regionIDs):
             if bar is None:
                 bar = trange(
@@ -983,7 +1045,6 @@ def export_footprint_bed3(
                 )
             bar.update(1)
             regionID = str(regionID)
-            # to-do: multithread write...
             # Process each region for chromosomal coordinates and footprints
             chrom, positions = regionID.split(":")
             start, end = map(int, positions.split("-"))
@@ -1006,19 +1067,14 @@ def export_footprint_bed3(
         del multimode_footprints, regionIDs
         bar.refresh()
         gc.collect()
-    sort_pool = ProcessPoolExecutor(max_workers=sort_n_jobs)
-    p_list = []
+
+    func1 = partial(pysam.tabix_index, preset="bed", force=True, line_skip=1, meta_char="#")
+    paths = []
     for i, group_name in enumerate(group_names):
         filehandle_dict[group_name].close()
         # Sort, compress, and index the BED file
-        func1 = partial(pysam.tabix_index, preset="bed", force=True, line_skip=1, meta_char="#")
-        p_list.append(sort_pool.submit(func1, os.path.join(save_path, f"{group_name}.bed")))
-    bar = trange(len(group_names), desc="Sorting Bed Files", dynamic_ncols=True)
-    for p in as_completed(p_list):
-        rs = p.result()
-        bar.update(1)
-    bar.close()
-    sort_pool.shutdown(wait=True)
+        paths.append(os.path.join(save_path, f"{group_name}.bed"))
+    process_map(func1, paths, max_workers=n_jobs, desc="Sorting Bed Files", dynamic_ncols=True)
 
 
 def footprint_generator(
@@ -1885,7 +1941,7 @@ def seq_attr_seq2print(
     save_norm=False,
     overwrite=False,
     lora_ids: list | list[list] = None,
-    save_group_names: list | list[list] = None,
+    save_group_names: str | list = None,
     lora_config: dict | str | None = None,
     group_names: list | list[list] | str | None = None,
     verbose=True,
@@ -1926,7 +1982,7 @@ def seq_attr_seq2print(
         Whether to overwrite the existing files
     lora_ids: list | list[list] | None
         The ids of the pseudobulks in the lora model you want to calculate the sequence attributions for (If you are not sure, set this as None and provide the group_names and lora_config). This can be a list of list because you can collapse multiple groups during LoRA finetuning into one model for inference.
-    save_group_names: list | None
+    save_group_names: str | list | None
         The save names for each group (specified by lora_ids), same length as lora_ids, if None, it will be infered from lora_ids with '-' connecting all ids. This should be the same as the one you provided to seq_tfbs_seq2print However, if you are collapsing many groups of lora id into one model, please provide a name or a list of names, or you might run into filename too long error.
     lora_config: dict | str | None
         The lora configuration dictionary or the path to the configuration dictionary
@@ -2146,12 +2202,12 @@ def seq_tfbs_seq2print(
             lora_config = json.load(open(lora_config, "r"))
     if type(gpus) is not list:
         gpus = [gpus]
-    if type(group_names) not in [np.ndarray, list]:
+    if type(group_names) is str:
         group_names = [group_names]
-    if type(save_group_names) not in [np.ndarray, list]:
-        save_group_names = [save_group_names] * len(group_names)
-    if type(group_names[0]) not in [np.ndarray, list]:
+    if type(group_names[0]) is str:
         group_names = [[x] for x in group_names]
+    if save_group_names is None:
+        save_group_names = [None] * len(group_names)
 
     for i in range(len(group_names)):
         if save_group_names[i] is None:

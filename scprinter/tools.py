@@ -1628,7 +1628,7 @@ def seq_lora_model_config(
         ), "cell grouping must all appear in embeddings.index"
     elif type(embeddings) is np.ndarray:
         assert len(embeddings) == len(
-            printer.insertion_file.obs
+            printer.insertion_file.obs[:]
         ), "embeddings must have the same length as the number of cells in the scprinter object, consider"
     if model_name is None and "savename" not in additional_lora_config:
         raise ValueError("Please provide a model name | a savename in additional_lora_config")
